@@ -1,0 +1,24 @@
+最新代码在otimization分支
+
+包括
+
+1. 最新Volcano更新
+2. 选择部分节点打分优化
+3. group 打分和绑定
+4. 阿基米德Metris
+5. make verify 更正格式，注释和变量名 (archimedes metrics相关的变量还需要加注释）
+6. 例子和README files(example/jdos)，包括如何运行batch job， spark任务(使用spark-submit和K8S spark operator)
+
+不包括
+
+1. pkg/plugin/predicates/的改动和predicate_extension.go
+2. 佟欣加的一些额外的log信息
+3. OnlyPodApply的改动
+这些佟欣可以加上
+
+
+编译测试建议
+
+make 
+make verify
+make unit-test

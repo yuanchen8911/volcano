@@ -201,37 +201,43 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 			}
 
 			nodeScores := util.PrioritizeNodes(task, predicateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
+			//Instead of choosing the best node for one tasks we choose the best K nodes for N tasks at a time
+			//specify the number of nodes based on the number of tasks
+			nodes := util.SelectTopNodes(nodeScores, tasks.Len()+1)
+			for i, node := range nodes {
+				// Allocate idle resource to the task.
+				if task.InitResreq.LessEqual(node.Idle) {
+					glog.V(3).Infof("Binding Task <%v/%v> to node <%v>",
+						task.Namespace, task.Name, node.Name)
+					if err := stmt.Allocate(task, node.Name); err != nil {
+						glog.Errorf("Failed to bind Task %v on %v in Session %v, err: %v",
+							task.UID, node.Name, ssn.UID, err)
+					}
+				} else {
+					//store information about missing resources
+					job.NodesFitDelta[node.Name] = node.Idle.Clone()
+					job.NodesFitDelta[node.Name].FitDelta(task.InitResreq)
+					glog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s> with limited resources",
+						task.Namespace, task.Name, node.Name)
 
-			node := util.SelectBestNode(nodeScores)
-			// Allocate idle resource to the task.
-			if task.InitResreq.LessEqual(node.Idle) {
-				glog.V(3).Infof("Binding Task <%v/%v> to node <%v>",
-					task.Namespace, task.Name, node.Name)
-				if err := stmt.Allocate(task, node.Name); err != nil {
-					glog.Errorf("Failed to bind Task %v on %v in Session %v, err: %v",
-						task.UID, node.Name, ssn.UID, err)
-				}
-			} else {
-				//store information about missing resources
-				job.NodesFitDelta[node.Name] = node.Idle.Clone()
-				job.NodesFitDelta[node.Name].FitDelta(task.InitResreq)
-				glog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s> with limited resources",
-					task.Namespace, task.Name, node.Name)
-
-				// Allocate releasing resource to the task if any.
-				if task.InitResreq.LessEqual(node.Releasing) {
-					glog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> for <%v> on <%v>",
-						task.Namespace, task.Name, node.Name, task.InitResreq, node.Releasing)
-					if err := stmt.Pipeline(task, node.Name); err != nil {
-						glog.Errorf("Failed to pipeline Task %v on %v",
-							task.UID, node.Name)
+					// Allocate releasing resource to the task if any.
+					if task.InitResreq.LessEqual(node.Releasing) {
+						glog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> for <%v> on <%v>",
+							task.Namespace, task.Name, node.Name, task.InitResreq, node.Releasing)
+						if err := stmt.Pipeline(task, node.Name); err != nil {
+							glog.Errorf("Failed to pipeline Task %v on %v",
+								task.UID, node.Name)
+						}
 					}
 				}
-			}
-
-			if ssn.JobReady(job) {
-				jobs.Push(job)
-				break
+				//If the task queue is empty, stop resource allocation
+				if tasks.Empty() {
+					break
+				}
+				//If there are still tasks and nodes, continue to allocate
+				if i < len(nodes)-1 {
+					task = tasks.Pop().(*api.TaskInfo)
+				}
 			}
 		}
 

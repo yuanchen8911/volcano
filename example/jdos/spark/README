@@ -1,0 +1,99 @@
+How to run a Spark job on K8S
+
+ 
+Do the following in order:
+
+0. start minikube 
+
+1. run: eval $(minikube docker-env)  https://stackoverflow.com/questions/52310599/what-does-minikube-docker-env-mean
+
+2. Download spark https://spark.apache.org/downloads.html
+
+3. Set environment SPARK_HOME and add $SPARK_HOME/bin to $PATH
+
+4. Run from SPARK_HOME dir to create spark container image: bin/docker-image-tool.sh -m -t spark build
+
+5. Configure a service account: kubectl create clusterrolebinding default --clusterrole=edit --serviceaccount=default:default --namespace=default
+
+6. Run spark-submit
+
+  #!/bin/bash
+  spark-submit \
+  --master k8s://https://192.168.99.112:8443 \
+  --deploy-mode cluster \
+  --name spark-pi \
+  --class org.apache.spark.examples.SparkPi \
+  --conf spark.executor.instances=2 \
+  --conf spark.kubernetes.container.image=spark:spark \
+  local:///opt/spark/examples/jars/spark-examples_2.11-2.4.4.jar 2000
+
+Ref:
+
+  1. https://medium.com/@andreyonistchuk/how-to-run-spark-2-4-on-osx-minikube-f0e5fdeb27be
+  2. https://itnext.io/running-spark-job-on-kubernetes-minikube-958cadaddd55
+  3. https://medium.com/faun/apache-spark-on-kubernetes-docker-for-mac-2501cc72e659
+  4. https://www.lightbend.com/blog/how-to-manage-monitor-spark-on-kubernetes-introduction-spark-submit-kubernetes-operator
+
+
+How to use spark operator to run spark with JDOS batcher scheduler
+
+1. Create the CRDs and opreator resources and start a spark operator 
+
+   manifest/spark-operator
+
+   kubectl apply -f spark-operator-jdos.yaml
+
+2. Check if the operator is running properly
+
+   kubectl get crd
+   kubectl get pod -n=spark-operator
+
+3. Run spark-pi example
+
+   kubectl apply -f spark-pi-configmap.yaml
+   kubectl apply -f spark-pi-jdos.yaml
+
+4. Check if the spark-pi job is running properly
+
+   kubectl get sparkapplication spark-pi -o=yaml
+   kubectl get pods
+   kubectl log spark-driver
+
+
+How to use spark operator to run spark (using helm)
+https://github.com/TommyLike/spark-operator-volcano-demo/blob/master/hack/setup-environment.sh#L89-L101
+
+1. Install helm  https://helm.sh/docs/install/
+
+2. Upgrade and start the helm server tiller:  'helm init --upgrade'
+
+3. Make sure tiller is running: kubectl get pods -n=kube-system
+
+4. Install spark-on-k8s operator
+
+   kubectl apply -f "${CURRENT_DIR}/hack/spark-operator-crds/"
+   kubectl create serviceaccount --namespace default spark
+   kubectl create clusterrolebinding spark-cluster-rule --clusterrole=cluster-admin --serviceaccount=default:spark
+   helm repo add incubator http://storage.googleapis.com/kubernetes-charts-incubator
+   helm install incubator/sparkoperator --namespace spark-operator --set enableBatchScheduler=true --version 0.3.1 --set operatorImageName=tommylike/spark-operator --set operatorVersion=0.0.5 --set enableWebhook=true 
+
+Ref: 
+
+  https://github.com/TommyLike/spark-operator-volcano-demo/blob/master/hack/volcano-0.2.yaml
+
+5. check if the operator is running 
+   helm ls
+   helm status <rlease-name>
+   kubectl get crd
+   kubectl get pod -n=spark-operator
+
+6. Configure a service account
+   kubectl apply -f https://raw.githubusercontent.com/GoogleCloudPlatform/spark-on-k8s-operator/master/manifest/spark-rbac.yaml
+
+7. Run spark-pi example
+   kubectl apply -f spark-pi.yaml
+   kubectl get sparkapplication spark-pi -o=yaml
+   kubectl get pods
+
+Ref: https://github.com/GoogleCloudPlatform/spark-on-k8s-operator/blob/master/docs/quick-start-guide.md
+     https://github.com/GoogleCloudPlatform/spark-on-k8s-operator/blob/master/docs/volcano-integration.md

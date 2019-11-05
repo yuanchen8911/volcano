@@ -59,7 +59,9 @@ func CalculateNumOfFeasibleNodesToFind(numAllNodes int32) (numNodes int32) {
 
 // PredicateNodes returns the specified number of nodes that fit a task
 func PredicateNodes(task *api.TaskInfo, nodes []*api.NodeInfo, fn api.PredicateFn) ([]*api.NodeInfo, *api.FitErrors) {
-	//var workerLock sync.Mutex
+	var predicateNodes []*api.NodeInfo
+
+	var workerLock sync.Mutex
 
 	var errorLock sync.Mutex
 	fe := api.NewFitErrors()
@@ -68,10 +70,9 @@ func PredicateNodes(task *api.TaskInfo, nodes []*api.NodeInfo, fn api.PredicateF
 	numNodesToFind := CalculateNumOfFeasibleNodesToFind(int32(allNodes))
 
 	//allocate enough space to avoid growing it
-	predicateNodes := make([]*api.NodeInfo, numNodesToFind)
+	//predicateNodes := make([]*api.NodeInfo, numNodesToFind)
 
-	numFoundNodes := int32(0)
-	processedNodes := int32(0)
+	var numFoundNodes, processedNodes int32
 
 	//create a context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,13 +96,18 @@ func PredicateNodes(task *api.TaskInfo, nodes []*api.NodeInfo, fn api.PredicateF
 		}
 
 		//check if the number of found nodes is more than the numNodesTofind
-		length := atomic.AddInt32(&numFoundNodes, 1)
-		if length > numNodesToFind {
+		//length := atomic.AddInt32(&numFoundNodes, 1)
+		if numFoundNodes >= numNodesToFind {
 			cancel()
-			atomic.AddInt32(&numFoundNodes, -1)
-		} else {
+			//atomic.AddInt32(&numFoundNodes, -1)
+		} /*else {
 			predicateNodes[length-1] = node
-		}
+		}*/
+		workerLock.Lock()
+		predicateNodes = append(predicateNodes, node)
+		numFoundNodes++
+		workerLock.Unlock()
+
 	}
 
 	//workqueue.ParallelizeUntil(context.TODO(), 16, len(nodes), checkNode)
@@ -205,16 +211,6 @@ func SelectBestNode(nodeScores map[float64][]*api.NodeInfo) *api.NodeInfo {
 	}
 
 	return bestNodes[rand.Intn(len(bestNodes))]
-}
-
-//SelectTopNodes returns the specified number of the top scoring nodes.
-// To do: randomly choose top nodes
-func SelectTopNodes(nodeScores map[float64][]*api.NodeInfo, numNodes int) []*api.NodeInfo {
-	sortedNodes := SortNodes(nodeScores)
-	if numNodes > len(sortedNodes) {
-		numNodes = len(sortedNodes)
-	}
-	return sortedNodes[0:numNodes]
 }
 
 // GetNodeList returns values of the map 'nodes'

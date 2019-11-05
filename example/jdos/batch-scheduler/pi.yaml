@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qj-1
+spec:
+  backoffLimit: 1
+  completions: 2
+  parallelism: 2
+  template:
+    metadata:
+      annotations:
+        scheduling.k8s.io/group-name: qj-1
+    spec:
+      containers:
+      - name: pi
+        image: perl
+        command: ["perl",  "-Mbignum=bpi", "-wle", "print bpi(5000)"]
+        resources:
+          requests:
+            cpu: 1
+            memory: 0.5Gi
+          limits:
+            cpu: 2
+            memory: 1Gi
+      restartPolicy: Never
+      schedulerName: jdos-batch
+---
+apiVersion: scheduling.incubator.k8s.io/v1alpha1
+kind: PodGroup
+metadata:
+  name: qj-1
+spec:
+  minMember: 2
+  queue: default

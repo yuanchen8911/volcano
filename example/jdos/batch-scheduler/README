@@ -1,0 +1,22 @@
+How to build and run the JDOS batch scheduler 
+
+1. Build
+   cd volcano.sh/volcano
+   make vc-scheduler
+   make verify
+   make unit-test
+2. Deploy the queue and podgroup CRDs, and create a default queue (default-queue)
+   cd volcano.sh/volcano/example/jdos
+   deploy.sh
+4. Start the scheduler (scheduler name: jdos-batch, default queue: default-queue)
+   cd volcano.sh/volcano
+   ./_output/bin/vc-scheduler --master=http://exp-k8s-api.jd.com --schedule-period=5s --v=5 --log-dir=./log --listen-address=:8081 --scheduler-name=jdos-batch --default-queue=default --node-max-tasks=30
+5. Summit a job (make sure the cluster has enough resources to start all the pods of the job) 
+   cd volcano.sh/volcano/example/jdos
+   kubectl apply -f small-job.yaml
+6. Check the status
+   kubectl get pods
+   kubectl get jobs
+7  When the job completes, delete the job,podgroup and pods
+   cd volcano.sh/volcano/example/jdos
+   del-all.sh
