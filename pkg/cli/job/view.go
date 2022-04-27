@@ -17,6 +17,7 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,8 +31,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
-	"volcano.sh/volcano/pkg/client/clientset/versioned"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
+	"volcano.sh/apis/pkg/client/clientset/versioned"
+	"volcano.sh/volcano/pkg/cli/util"
 )
 
 type viewFlags struct {
@@ -41,7 +43,7 @@ type viewFlags struct {
 	JobName   string
 }
 
-// level of print indent
+// level of print indent.
 const (
 	Level0 = iota
 	Level1
@@ -50,7 +52,7 @@ const (
 
 var viewJobFlags = &viewFlags{}
 
-// InitViewFlags  init the view command flags
+// InitViewFlags init the view command flags.
 func InitViewFlags(cmd *cobra.Command) {
 	initFlags(cmd, &viewJobFlags.commonFlags)
 
@@ -58,9 +60,9 @@ func InitViewFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&viewJobFlags.JobName, "name", "N", "", "the name of job")
 }
 
-// ViewJob gives full details of the  job
+// ViewJob gives full details of the job.
 func ViewJob() error {
-	config, err := buildConfig(viewJobFlags.Master, viewJobFlags.Kubeconfig)
+	config, err := util.BuildConfig(viewJobFlags.Master, viewJobFlags.Kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -70,7 +72,7 @@ func ViewJob() error {
 	}
 
 	jobClient := versioned.NewForConfigOrDie(config)
-	job, err := jobClient.BatchV1alpha1().Jobs(viewJobFlags.Namespace).Get(viewJobFlags.JobName, metav1.GetOptions{})
+	job, err := jobClient.BatchV1alpha1().Jobs(viewJobFlags.Namespace).Get(context.TODO(), viewJobFlags.JobName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -83,7 +85,7 @@ func ViewJob() error {
 	return nil
 }
 
-// PrintJobInfo print the job detailed info into writer
+// PrintJobInfo print the job detailed info into writer.
 func PrintJobInfo(job *v1alpha1.Job, writer io.Writer) {
 	WriteLine(writer, Level0, "Name:       \t%s\n", job.Name)
 	WriteLine(writer, Level0, "Namespace:  \t%s\n", job.Namespace)
@@ -195,9 +197,17 @@ func PrintJobInfo(job *v1alpha1.Job, writer io.Writer) {
 			WriteLine(writer, Level2, "%s: \t%s\n", key, value)
 		}
 	}
+	if len(job.Status.Conditions) > 0 {
+		WriteLine(writer, Level1, "Conditions:\n    Status\tTransitionTime\n")
+		for _, c := range job.Status.Conditions {
+			WriteLine(writer, Level2, "%v \t%v \n",
+				c.Status,
+				c.LastTransitionTime)
+		}
+	}
 }
 
-// PrintEvents print event info to writer
+// PrintEvents print event info to writer.
 func PrintEvents(events []coreV1.Event, writer io.Writer) {
 	if len(events) > 0 {
 		WriteLine(writer, Level0, "%s:\n%-15s\t%-40s\t%-30s\t%-40s\t%s\n", "Events", "Type", "Reason", "Age", "Form", "Message")
@@ -224,17 +234,16 @@ func PrintEvents(events []coreV1.Event, writer io.Writer) {
 	} else {
 		WriteLine(writer, Level0, "Events: \t<none>\n")
 	}
-
 }
 
-// GetEvents get the job event by config
+// GetEvents get the job event by config.
 func GetEvents(config *rest.Config, job *v1alpha1.Job) []coreV1.Event {
 	kubernetes, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		fmt.Printf("%v\n", err)
 		return nil
 	}
-	events, _ := kubernetes.CoreV1().Events(viewJobFlags.Namespace).List(metav1.ListOptions{})
+	events, _ := kubernetes.CoreV1().Events(viewJobFlags.Namespace).List(context.TODO(), metav1.ListOptions{})
 	var jobEvents []coreV1.Event
 	for _, v := range events.Items {
 		if strings.HasPrefix(v.ObjectMeta.Name, job.Name+".") {
@@ -244,7 +253,7 @@ func GetEvents(config *rest.Config, job *v1alpha1.Job) []coreV1.Event {
 	return jobEvents
 }
 
-// WriteLine write lines with specified indent
+// WriteLine write lines with specified indent.
 func WriteLine(writer io.Writer, spaces int, content string, params ...interface{}) {
 	prefix := ""
 	for i := 0; i < spaces; i++ {

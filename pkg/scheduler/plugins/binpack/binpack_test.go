@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 
-	kbv1 "volcano.sh/volcano/pkg/apis/scheduling/v1alpha1"
+	schedulingv1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/cache"
 	"volcano.sh/volcano/pkg/scheduler/conf"
@@ -43,12 +43,12 @@ func TestArguments(t *testing.T) {
 	defer framework.CleanupPluginBuilders()
 
 	arguments := framework.Arguments{
-		"binpack.weight":                    "10",
-		"binpack.cpu":                       "5",
-		"binpack.memory":                    "2",
+		"binpack.weight":                    10,
+		"binpack.cpu":                       5,
+		"binpack.memory":                    2,
 		"binpack.resources":                 "nvidia.com/gpu, example.com/foo",
-		"binpack.resources.nvidia.com/gpu":  "7",
-		"binpack.resources.example.com/foo": "-3",
+		"binpack.resources.nvidia.com/gpu":  7,
+		"binpack.resources.example.com/foo": -3,
 	}
 
 	builder, ok := framework.GetPluginBuilder(PluginName)
@@ -112,39 +112,39 @@ func TestNode(t *testing.T) {
 	n3 := util.BuildNode("n3", util.BuildResourceList("2", "4Gi"), make(map[string]string))
 	addResource(n3.Status.Allocatable, FOO, "16")
 
-	pg1 := &kbv1.PodGroup{
+	pg1 := &schedulingv1.PodGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "pg1",
 			Namespace: "c1",
 		},
-		Spec: kbv1.PodGroupSpec{
+		Spec: schedulingv1.PodGroupSpec{
 			Queue: "c1",
 		},
 	}
-	queue1 := &kbv1.Queue{
+	queue1 := &schedulingv1.Queue{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "c1",
 		},
-		Spec: kbv1.QueueSpec{
+		Spec: schedulingv1.QueueSpec{
 			Weight: 1,
 		},
 	}
 
 	tests := []struct {
 		name      string
-		podGroups []*kbv1.PodGroup
+		podGroups []*schedulingv1.PodGroup
 		pods      []*v1.Pod
 		nodes     []*v1.Node
-		queues    []*kbv1.Queue
+		queues    []*schedulingv1.Queue
 		arguments framework.Arguments
 		expected  map[string]map[string]float64
 	}{
 		{
 			name: "single job",
-			podGroups: []*kbv1.PodGroup{
+			podGroups: []*schedulingv1.PodGroup{
 				pg1,
 			},
-			queues: []*kbv1.Queue{
+			queues: []*schedulingv1.Queue{
 				queue1,
 			},
 			pods: []*v1.Pod{
@@ -154,18 +154,62 @@ func TestNode(t *testing.T) {
 				n1, n2, n3,
 			},
 			arguments: framework.Arguments{
-				"binpack.weight":                    "10",
-				"binpack.cpu":                       "2",
-				"binpack.memory":                    "3",
+				"binpack.weight":                    10,
+				"binpack.cpu":                       2,
+				"binpack.memory":                    3,
 				"binpack.resources":                 "nvidia.com/gpu, example.com/foo",
-				"binpack.resources.nvidia.com/gpu":  "7",
-				"binpack.resources.example.com/foo": "8",
+				"binpack.resources.nvidia.com/gpu":  7,
+				"binpack.resources.example.com/foo": 8,
 			},
 			expected: map[string]map[string]float64{
 				"c1/p1": {
-					"n1": 70,
-					"n2": 13.75,
-					"n3": 15,
+					"n1": 700,
+					"n2": 137.5,
+					"n3": 150,
+				},
+				"c1/p2": {
+					"n1": 0,
+					"n2": 375,
+					"n3": 0,
+				},
+				"c1/p3": {
+					"n1": 0,
+					"n2": 531.25,
+					"n3": 0,
+				},
+				"c1/p4": {
+					"n1": 0,
+					"n2": 173.076923076,
+					"n3": 346.153846153,
+				},
+			},
+		},
+		{
+			name: "single job",
+			podGroups: []*schedulingv1.PodGroup{
+				pg1,
+			},
+			queues: []*schedulingv1.Queue{
+				queue1,
+			},
+			pods: []*v1.Pod{
+				p1, p2, p3, p4,
+			},
+			nodes: []*v1.Node{
+				n1, n2, n3,
+			},
+			arguments: framework.Arguments{
+				"binpack.weight":                   1,
+				"binpack.cpu":                      1,
+				"binpack.memory":                   1,
+				"binpack.resources":                "nvidia.com/gpu",
+				"binpack.resources.nvidia.com/gpu": 23,
+			},
+			expected: map[string]map[string]float64{
+				"c1/p1": {
+					"n1": 75,
+					"n2": 15.625,
+					"n3": 12.5,
 				},
 				"c1/p2": {
 					"n1": 0,
@@ -174,57 +218,13 @@ func TestNode(t *testing.T) {
 				},
 				"c1/p3": {
 					"n1": 0,
-					"n2": 53.125,
+					"n2": 50.5,
 					"n3": 0,
 				},
 				"c1/p4": {
 					"n1": 0,
-					"n2": 17.3076923076,
-					"n3": 34.6153846153,
-				},
-			},
-		},
-		{
-			name: "single job",
-			podGroups: []*kbv1.PodGroup{
-				pg1,
-			},
-			queues: []*kbv1.Queue{
-				queue1,
-			},
-			pods: []*v1.Pod{
-				p1, p2, p3, p4,
-			},
-			nodes: []*v1.Node{
-				n1, n2, n3,
-			},
-			arguments: framework.Arguments{
-				"binpack.weight":                   "1",
-				"binpack.cpu":                      "1",
-				"binpack.memory":                   "1",
-				"binpack.resources":                "nvidia.com/gpu",
-				"binpack.resources.nvidia.com/gpu": "23",
-			},
-			expected: map[string]map[string]float64{
-				"c1/p1": {
-					"n1": 7.5,
-					"n2": 1.5625,
-					"n3": 1.25,
-				},
-				"c1/p2": {
-					"n1": 0,
-					"n2": 3.75,
-					"n3": 0,
-				},
-				"c1/p3": {
-					"n1": 0,
-					"n2": 5.05,
-					"n3": 0,
-				},
-				"c1/p4": {
-					"n1": 0,
-					"n2": 5,
-					"n3": 5,
+					"n2": 50,
+					"n3": 50,
 				},
 			},
 		},
@@ -252,10 +252,10 @@ func TestNode(t *testing.T) {
 			schedulerCache.AddPod(pod)
 		}
 		for _, ss := range test.podGroups {
-			schedulerCache.AddPodGroupV1alpha1(ss)
+			schedulerCache.AddPodGroupV1beta1(ss)
 		}
 		for _, q := range test.queues {
-			schedulerCache.AddQueueV1alpha1(q)
+			schedulerCache.AddQueueV1beta1(q)
 		}
 
 		trueValue := true
@@ -269,7 +269,7 @@ func TestNode(t *testing.T) {
 					},
 				},
 			},
-		})
+		}, nil)
 		defer framework.CloseSession(ssn)
 
 		for _, job := range ssn.Jobs {

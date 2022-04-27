@@ -1,47 +1,47 @@
 /*
-Copyright 2017 The Kubernetes Authors.
+ Copyright 2021 The Volcano Authors.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
 */
 
 package allocate
 
 import (
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
-	"volcano.sh/volcano/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
+	"volcano.sh/volcano/pkg/scheduler/metrics"
 	"volcano.sh/volcano/pkg/scheduler/util"
 )
 
-type allocateAction struct {
-	ssn *framework.Session
+var targetJob = util.Reservation.TargetJob
+
+type Action struct{}
+
+func New() *Action {
+	return &Action{}
 }
 
-func New() *allocateAction {
-	return &allocateAction{}
-}
-
-func (alloc *allocateAction) Name() string {
+func (alloc *Action) Name() string {
 	return "allocate"
 }
 
-func (alloc *allocateAction) Initialize() {}
+func (alloc *Action) Initialize() {}
 
-func (alloc *allocateAction) Execute(ssn *framework.Session) {
-	glog.V(3).Infof("Enter Allocate ...")
-	defer glog.V(3).Infof("Leaving Allocate ...")
+func (alloc *Action) Execute(ssn *framework.Session) {
+	klog.V(3).Infof("Enter Allocate ...")
+	defer klog.V(3).Infof("Leaving Allocate ...")
 
 	// the allocation for pod may have many stages
 	// 1. pick a namespace named N (using ssn.NamespaceOrderFn)
@@ -58,16 +58,18 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 	jobsMap := map[api.NamespaceName]map[api.QueueID]*util.PriorityQueue{}
 
 	for _, job := range ssn.Jobs {
-		if job.PodGroup.Status.Phase == scheduling.PodGroupPending {
+		if job.IsPending() {
+			klog.V(4).Infof("Job <%s/%s> Queue <%s> skip allocate, reason: job status is pending.",
+				job.Namespace, job.Name, job.Queue)
 			continue
 		}
 		if vr := ssn.JobValid(job); vr != nil && !vr.Pass {
-			glog.V(4).Infof("Job <%s/%s> Queue <%s> skip allocate, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
+			klog.V(4).Infof("Job <%s/%s> Queue <%s> skip allocate, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
 			continue
 		}
 
 		if _, found := ssn.Queues[job.Queue]; !found {
-			glog.Warningf("Skip adding Job <%s/%s> because its queue %s is not found",
+			klog.Warningf("Skip adding Job <%s/%s> because its queue %s is not found",
 				job.Namespace, job.Name, job.Queue)
 			continue
 		}
@@ -87,25 +89,30 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 			queueMap[job.Queue] = jobs
 		}
 
-		glog.V(4).Infof("Added Job <%s/%s> into Queue <%s>", job.Namespace, job.Name, job.Queue)
+		klog.V(4).Infof("Added Job <%s/%s> into Queue <%s>", job.Namespace, job.Name, job.Queue)
 		jobs.Push(job)
 	}
 
-	glog.V(3).Infof("Try to allocate resource to %d Namespaces", len(jobsMap))
+	klog.V(3).Infof("Try to allocate resource to %d Namespaces", len(jobsMap))
 
 	pendingTasks := map[api.JobID]*util.PriorityQueue{}
 
-	allNodes := util.GetNodeList(ssn.Nodes)
-
+	allNodes := ssn.NodeList
+	unlockedNodes := allNodes
+	if targetJob != nil && len(util.Reservation.LockedNodes) != 0 {
+		unlockedNodes = unlockedNodes[0:0]
+		for _, node := range allNodes {
+			if _, exist := util.Reservation.LockedNodes[node.Name]; !exist {
+				unlockedNodes = append(unlockedNodes, node)
+			}
+		}
+	}
+	for _, unlockedNode := range unlockedNodes {
+		klog.V(4).Infof("unlockedNode ID: %s, Name: %s", unlockedNode.Node.UID, unlockedNode.Node.Name)
+	}
 	predicateFn := func(task *api.TaskInfo, node *api.NodeInfo) error {
 		// Check for Resource Predicate
-		// TODO: We could not allocate resource to task from both node.Idle and node.Releasing now,
-		// after it is done, we could change the following compare to:
-		// clonedNode := node.Idle.Clone()
-		// if !task.InitResreq.LessEqual(clonedNode.Add(node.Releasing)) {
-		//    ...
-		// }
-		if !task.InitResreq.LessEqual(node.Idle) && !task.InitResreq.LessEqual(node.Releasing) {
+		if !task.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {
 			return api.NewFitError(task, node, api.NodeResourceFitFailed)
 		}
 
@@ -127,16 +134,19 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 
 		// pick queue for given namespace
 		//
-		// This block use a algorithm with time complex O(n).
+		// This block use an algorithm with time complex O(n).
 		// But at least PriorityQueue could not be used here,
 		// because the allocation of job would change the priority of queue among all namespaces,
 		// and the PriorityQueue have no ability to update priority for a special queue.
 		var queue *api.QueueInfo
-		for queueId := range queueInNamespace {
-			currentQueue := ssn.Queues[queueId]
+		for queueID := range queueInNamespace {
+			currentQueue := ssn.Queues[queueID]
 			if ssn.Overused(currentQueue) {
-				glog.V(3).Infof("Namespace <%s> Queue <%s> is overused, ignore it.", namespace, currentQueue.Name)
-				delete(queueInNamespace, queueId)
+				klog.V(3).Infof("Namespace <%s> Queue <%s> is overused, ignore it.", namespace, currentQueue.Name)
+				delete(queueInNamespace, queueID)
+				continue
+			}
+			if jobs, found := queueInNamespace[currentQueue.UID]; found && jobs.Empty() {
 				continue
 			}
 
@@ -146,25 +156,34 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 		}
 
 		if queue == nil {
-			glog.V(3).Infof("Namespace <%s> have no queue, skip it", namespace)
+			klog.V(3).Infof("Namespace <%s> have no queue, skip it", namespace)
 			continue
 		}
 
-		glog.V(3).Infof("Try to allocate resource to Jobs in Namespace <%s> Queue <%v>", namespace, queue.Name)
+		klog.V(3).Infof("Try to allocate resource to Jobs in Namespace <%s> Queue <%v>", namespace, queue.Name)
 
 		jobs, found := queueInNamespace[queue.UID]
 		if !found || jobs.Empty() {
-			glog.V(4).Infof("Can not find jobs for queue %s.", queue.Name)
+			delete(queueInNamespace, queue.UID)
+			namespaces.Push(namespace)
+			klog.V(4).Infof("Can not find jobs for queue %s.", queue.Name)
 			continue
 		}
 
 		job := jobs.Pop().(*api.JobInfo)
-		if _, found := pendingTasks[job.UID]; !found {
+		var nodes []*api.NodeInfo
+		if targetJob != nil && job.UID == targetJob.UID {
+			klog.V(4).Infof("Try to allocate resource to target job: %s", job.Name)
+			nodes = allNodes
+		} else {
+			nodes = unlockedNodes
+		}
+		if _, found = pendingTasks[job.UID]; !found {
 			tasks := util.NewPriorityQueue(ssn.TaskOrderFn)
 			for _, task := range job.TaskStatusIndex[api.Pending] {
 				// Skip BestEffort task in 'allocate' action.
 				if task.Resreq.IsEmpty() {
-					glog.V(4).Infof("Task <%v/%v> is BestEffort task, skip it.",
+					klog.V(4).Infof("Task <%v/%v> is BestEffort task, skip it.",
 						task.Namespace, task.Name)
 					continue
 				}
@@ -175,61 +194,77 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 		}
 		tasks := pendingTasks[job.UID]
 
-		glog.V(3).Infof("Try to allocate resource to %d tasks of Job <%v/%v>",
+		klog.V(3).Infof("Try to allocate resource to %d tasks of Job <%v/%v>",
 			tasks.Len(), job.Namespace, job.Name)
 
-		stmt := ssn.Statement()
-
+		stmt := framework.NewStatement(ssn)
+		ph := util.NewPredicateHelper()
 		for !tasks.Empty() {
 			task := tasks.Pop().(*api.TaskInfo)
 
-			glog.V(3).Infof("There are <%d> nodes for Job <%v/%v>",
-				len(ssn.Nodes), job.Namespace, job.Name)
-
-			//any task that doesn't fit will be the last processed
-			//within this loop context so any existing contents of
-			//NodesFitDelta are for tasks that eventually did fit on a
-			//node
-			if len(job.NodesFitDelta) > 0 {
-				job.NodesFitDelta = make(api.NodeResourceMap)
+			if !ssn.Allocatable(queue, task) {
+				klog.V(3).Infof("Queue <%s> is overused when considering task <%s>, ignore it.", queue.Name, task.Name)
+				continue
 			}
 
-			predicateNodes, fitErrors := util.PredicateNodes(task, allNodes, predicateFn)
+			klog.V(3).Infof("There are <%d> nodes for Job <%v/%v>", len(nodes), job.Namespace, job.Name)
+
+			predicateNodes, fitErrors := ph.PredicateNodes(task, nodes, predicateFn)
 			if len(predicateNodes) == 0 {
 				job.NodesFitErrors[task.UID] = fitErrors
 				break
 			}
 
-			nodeScores := util.PrioritizeNodes(task, predicateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
+			var candidateNodes []*api.NodeInfo
+			for _, n := range predicateNodes {
+				if task.InitResreq.LessEqual(n.Idle, api.Zero) || task.InitResreq.LessEqual(n.FutureIdle(), api.Zero) {
+					candidateNodes = append(candidateNodes, n)
+				}
+			}
 
-			node := util.SelectBestNode(nodeScores)
+			var node *api.NodeInfo
+			switch {
+			case len(candidateNodes) == 0: // If not candidate nodes for this task, skip it.
+				continue
+			case len(candidateNodes) == 1: // If only one node after predicate, just use it.
+				node = candidateNodes[0]
+			case len(candidateNodes) > 1: // If more than one node after predicate, using "the best" one
+				nodeScores := util.PrioritizeNodes(task, candidateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
+
+				node = ssn.BestNodeFn(task, nodeScores)
+				if node == nil {
+					node = util.SelectBestNode(nodeScores)
+				}
+			}
+
 			// Allocate idle resource to the task.
-			if task.InitResreq.LessEqual(node.Idle) {
-				glog.V(3).Infof("Binding Task <%v/%v> to node <%v>",
+			if task.InitResreq.LessEqual(node.Idle, api.Zero) {
+				klog.V(3).Infof("Binding Task <%v/%v> to node <%v>",
 					task.Namespace, task.Name, node.Name)
-				if err := stmt.Allocate(task, node.Name); err != nil {
-					glog.Errorf("Failed to bind Task %v on %v in Session %v, err: %v",
+				if err := stmt.Allocate(task, node); err != nil {
+					klog.Errorf("Failed to bind Task %v on %v in Session %v, err: %v",
 						task.UID, node.Name, ssn.UID, err)
+				} else {
+					metrics.UpdateE2eSchedulingDurationByJob(job.Name, string(job.Queue), job.Namespace, metrics.Duration(job.CreationTimestamp.Time))
 				}
 			} else {
-				//store information about missing resources
-				job.NodesFitDelta[node.Name] = node.Idle.Clone()
-				job.NodesFitDelta[node.Name].FitDelta(task.InitResreq)
-				glog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s> with limited resources",
+				klog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s> with limited resources",
 					task.Namespace, task.Name, node.Name)
 
 				// Allocate releasing resource to the task if any.
-				if task.InitResreq.LessEqual(node.Releasing) {
-					glog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> for <%v> on <%v>",
+				if task.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {
+					klog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> for <%v> on <%v>",
 						task.Namespace, task.Name, node.Name, task.InitResreq, node.Releasing)
 					if err := stmt.Pipeline(task, node.Name); err != nil {
-						glog.Errorf("Failed to pipeline Task %v on %v",
-							task.UID, node.Name)
+						klog.Errorf("Failed to pipeline Task %v on %v in Session %v for %v.",
+							task.UID, node.Name, ssn.UID, err)
+					} else {
+						metrics.UpdateE2eSchedulingDurationByJob(job.Name, string(job.Queue), job.Namespace, metrics.Duration(job.CreationTimestamp.Time))
 					}
 				}
 			}
 
-			if ssn.JobReady(job) {
+			if ssn.JobReady(job) && !tasks.Empty() {
 				jobs.Push(job)
 				break
 			}
@@ -238,7 +273,9 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 		if ssn.JobReady(job) {
 			stmt.Commit()
 		} else {
-			stmt.Discard()
+			if !ssn.JobPipelined(job) {
+				stmt.Discard()
+			}
 		}
 
 		// Added Namespace back until no job in Namespace.
@@ -246,4 +283,4 @@ func (alloc *allocateAction) Execute(ssn *framework.Session) {
 	}
 }
 
-func (alloc *allocateAction) UnInitialize() {}
+func (alloc *Action) UnInitialize() {}

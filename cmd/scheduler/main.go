@@ -24,11 +24,12 @@ import (
 	// init pprof server
 	_ "net/http/pprof"
 
-	"github.com/golang/glog"
 	"github.com/spf13/pflag"
+	_ "go.uber.org/automaxprocs"
 
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apiserver/pkg/util/flag"
+	cliflag "k8s.io/component-base/cli/flag"
+	"k8s.io/klog"
 
 	"volcano.sh/volcano/cmd/scheduler/app"
 	"volcano.sh/volcano/cmd/scheduler/app/options"
@@ -46,18 +47,20 @@ var logFlushFreq = pflag.Duration("log-flush-frequency", 5*time.Second, "Maximum
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
+	klog.InitFlags(nil)
+
 	s := options.NewServerOption()
 	s.AddFlags(pflag.CommandLine)
 	s.RegisterOptions()
 
-	flag.InitFlags()
+	cliflag.InitFlags()
 	if err := s.CheckOptionOrDie(); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	go wait.Until(glog.Flush, *logFlushFreq, wait.NeverStop)
-	defer glog.Flush()
+	go wait.Until(klog.Flush, *logFlushFreq, wait.NeverStop)
+	defer klog.Flush()
 
 	if err := app.Run(s); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

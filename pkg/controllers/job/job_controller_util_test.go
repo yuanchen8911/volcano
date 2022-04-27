@@ -23,7 +23,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
+	busv1alpha1 "volcano.sh/apis/pkg/apis/bus/v1alpha1"
 	"volcano.sh/volcano/pkg/controllers/apis"
 )
 
@@ -213,11 +214,6 @@ func TestCreateJobPod(t *testing.T) {
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			PodTemplate: &v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -244,7 +240,7 @@ func TestCreateJobPod(t *testing.T) {
 	for i, testcase := range testcases {
 
 		t.Run(testcase.Name, func(t *testing.T) {
-			pod := createJobPod(testcase.Job, testcase.PodTemplate, testcase.Index)
+			pod := createJobPod(testcase.Job, testcase.PodTemplate, v1alpha1.NumaPolicy(""), testcase.Index, false)
 
 			if testcase.ReturnVal != nil && pod != nil && pod.Name != testcase.ReturnVal.Name && pod.Namespace != testcase.ReturnVal.Namespace {
 				t.Errorf("Expected Return Value to be %v but got %v in case %d", testcase.ReturnVal, pod, i)
@@ -261,7 +257,7 @@ func TestApplyPolicies(t *testing.T) {
 		Name      string
 		Job       *v1alpha1.Job
 		Request   *apis.Request
-		ReturnVal v1alpha1.Action
+		ReturnVal busv1alpha1.Action
 	}{
 		{
 			Name: "Test Apply policies where Action is not empty",
@@ -292,16 +288,11 @@ func TestApplyPolicies(t *testing.T) {
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
-				Action: v1alpha1.EnqueueAction,
+				Action: busv1alpha1.EnqueueAction,
 			},
-			ReturnVal: v1alpha1.EnqueueAction,
+			ReturnVal: busv1alpha1.EnqueueAction,
 		},
 		{
 			Name: "Test Apply policies where event is OutOfSync",
@@ -332,16 +323,11 @@ func TestApplyPolicies(t *testing.T) {
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
-				Event: v1alpha1.OutOfSyncEvent,
+				Event: busv1alpha1.OutOfSyncEvent,
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies where version is outdated",
@@ -372,17 +358,11 @@ func TestApplyPolicies(t *testing.T) {
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					Version: 2,
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
 				JobVersion: 1,
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies where overriding job level policies and with exitcode",
@@ -412,24 +392,19 @@ func TestApplyPolicies(t *testing.T) {
 							},
 							Policies: []v1alpha1.LifecyclePolicy{
 								{
-									Action:   v1alpha1.SyncJobAction,
-									Event:    v1alpha1.CommandIssuedEvent,
+									Action:   busv1alpha1.SyncJobAction,
+									Event:    busv1alpha1.CommandIssuedEvent,
 									ExitCode: &errorCode0,
 								},
 							},
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
 				TaskName: "task1",
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies where overriding job level policies and without exitcode",
@@ -459,24 +434,19 @@ func TestApplyPolicies(t *testing.T) {
 							},
 							Policies: []v1alpha1.LifecyclePolicy{
 								{
-									Action: v1alpha1.SyncJobAction,
-									Event:  v1alpha1.CommandIssuedEvent,
+									Action: busv1alpha1.SyncJobAction,
+									Event:  busv1alpha1.CommandIssuedEvent,
 								},
 							},
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
 				TaskName: "task1",
-				Event:    v1alpha1.CommandIssuedEvent,
+				Event:    busv1alpha1.CommandIssuedEvent,
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies with job level policies",
@@ -507,17 +477,12 @@ func TestApplyPolicies(t *testing.T) {
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request: &apis.Request{
 				TaskName: "task1",
-				Event:    v1alpha1.CommandIssuedEvent,
+				Event:    busv1alpha1.CommandIssuedEvent,
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies with job level policies",
@@ -549,21 +514,16 @@ func TestApplyPolicies(t *testing.T) {
 					},
 					Policies: []v1alpha1.LifecyclePolicy{
 						{
-							Action: v1alpha1.SyncJobAction,
-							Event:  v1alpha1.CommandIssuedEvent,
+							Action: busv1alpha1.SyncJobAction,
+							Event:  busv1alpha1.CommandIssuedEvent,
 						},
-					},
-				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
 					},
 				},
 			},
 			Request: &apis.Request{
-				Event: v1alpha1.CommandIssuedEvent,
+				Event: busv1alpha1.CommandIssuedEvent,
 			},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 		{
 			Name: "Test Apply policies with job level policies with exitcode",
@@ -595,20 +555,15 @@ func TestApplyPolicies(t *testing.T) {
 					},
 					Policies: []v1alpha1.LifecyclePolicy{
 						{
-							Action:   v1alpha1.SyncJobAction,
-							Event:    v1alpha1.CommandIssuedEvent,
+							Action:   busv1alpha1.SyncJobAction,
+							Event:    busv1alpha1.CommandIssuedEvent,
 							ExitCode: &errorCode0,
 						},
 					},
 				},
-				Status: v1alpha1.JobStatus{
-					ControlledResources: map[string]string{
-						"volume-emptyDir-vc1": "vc1",
-					},
-				},
 			},
 			Request:   &apis.Request{},
-			ReturnVal: v1alpha1.SyncJobAction,
+			ReturnVal: busv1alpha1.SyncJobAction,
 		},
 	}
 
@@ -626,17 +581,22 @@ func TestApplyPolicies(t *testing.T) {
 
 func TestAddResourceList(t *testing.T) {
 	testcases := []struct {
-		Name string
-		List v1.ResourceList
-		New  v1.ResourceList
+		Name        string
+		List        v1.ResourceList
+		Req         v1.ResourceList
+		Limit       v1.ResourceList
+		ExpectedVal v1.ResourceList
 	}{
 		{
 			Name: "Already Present resource",
 			List: map[v1.ResourceName]resource.Quantity{
 				"cpu": *resource.NewQuantity(100, ""),
 			},
-			New: map[v1.ResourceName]resource.Quantity{
+			Req: map[v1.ResourceName]resource.Quantity{
 				"cpu": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(200, ""),
 			},
 		},
 		{
@@ -644,15 +604,83 @@ func TestAddResourceList(t *testing.T) {
 			List: map[v1.ResourceName]resource.Quantity{
 				"cpu": *resource.NewQuantity(100, ""),
 			},
-			New: map[v1.ResourceName]resource.Quantity{
+			Req: map[v1.ResourceName]resource.Quantity{
+				"memory": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(100, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+		},
+		{
+			Name: "Nil Req with different resource",
+			List: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(100, ""),
+			},
+			Limit: map[v1.ResourceName]resource.Quantity{
+				"memory": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(100, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+		},
+		{
+			Name: "Nil Req with same resource",
+			List: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(100, ""),
+			},
+			Limit: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(200, ""),
+			},
+		},
+		{
+			Name: "Nil Req with multiple resource",
+			List: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(100, ""),
+			},
+			Limit: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(100, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(200, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+		},
+		{
+			Name: "Req and Limit exist simultaneously",
+			List: map[v1.ResourceName]resource.Quantity{
+				"cpu": *resource.NewQuantity(100, ""),
+			},
+			Req: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(100, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+			Limit: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(100, ""),
+				"memory": *resource.NewQuantity(100, ""),
+			},
+			ExpectedVal: map[v1.ResourceName]resource.Quantity{
+				"cpu":    *resource.NewQuantity(200, ""),
 				"memory": *resource.NewQuantity(100, ""),
 			},
 		},
 	}
 
-	for _, testcase := range testcases {
+	for i, testcase := range testcases {
 		t.Run(testcase.Name, func(t *testing.T) {
-			addResourceList(testcase.List, testcase.New, nil)
+			addResourceList(testcase.List, testcase.Req, testcase.Limit)
+			if testcase.ExpectedVal != nil {
+				for k, v := range testcase.ExpectedVal {
+					if _v, ok := testcase.List[k]; !ok || !_v.Equal(v) {
+						t.Errorf("Expected return value to be %v but got %v in case %d", testcase.ExpectedVal, testcase.List, i)
+					}
+				}
+			}
 		})
 	}
 }

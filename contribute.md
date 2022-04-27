@@ -1,19 +1,19 @@
 
 # Welcome to Volcano!
 
--   [Before you get started](#before-you-get-started)
-    -   [Code of Conduct](#code-of-conduct)
-    -   [Community Expectations](#community-expectations)
--   [Getting started](#getting-started)
--   [Your First Contribution](#your-first-contribution)
-    -   [Find something to work on](#find-something-to-work-on)
-        -   [Find a good first topic](#find-a-good-first-topic)
-        -   [Work on an Issue](#work-on-an-issue)
-        -   [File an Issue](#file-an-issue)
--   [Contributor Workflow](#contributor-workflow)
-    -   [Creating Pull Requests](#creating-pull-requests)
-    -   [Code Review](#code-review)
-    -   [Testing](#testing)
+- [Before you get started](#before-you-get-started)
+  - [Code of Conduct](#code-of-conduct)
+  - [Community Expectations](#community-expectations)
+- [Getting started](#getting-started)
+- [Your First Contribution](#your-first-contribution)
+  - [Find something to work on](#find-something-to-work-on)
+    - [Find a good first topic](#find-a-good-first-topic)
+    - [Work on an issue](#work-on-an-issue)
+    - [File an Issue](#file-an-issue)
+- [Contributor Workflow](#contributor-workflow)
+  - [Creating Pull Requests](#creating-pull-requests)
+  - [Code Review](#code-review)
+  - [Testing](#testing)
 
 # Before you get started
 
@@ -24,14 +24,14 @@ Please make sure to read and observe our [Code of Conduct](./code_of_conduct.md)
 ## Community Expectations
 
 Volcano is a community project driven by its community which strives to promote a healthy, friendly and productive environment.
-The goal of the community is to develop a volcano system which is useful for runnning high performance workloads such as AI,ML,Deep Learning Application on top of Kubernetes. To build a such volcano system at such scale requires the support of a community with similar aspirations.
+The goal of the community is to develop a volcano system which is useful for running high performance workloads such as AI, ML, Deep Learning Application on top of Kubernetes. To build a volcano system at such scale requires the support of a community with similar aspirations.
 
 - See [Community Membership](./community-membership.md) for a list of various community roles. With gradual contributions, one can move up in the chain.
 
 
 # Getting started
 
-- Read the [get started](docs/development/perepare-for-development.md) for developing code for Volcano
+- Read the [get started](docs/development/prepare-for-development.md) for developing code for Volcano
 - Read the [setup](docs/development/development.md) for build/deploy instructions.
 
 
@@ -39,7 +39,7 @@ The goal of the community is to develop a volcano system which is useful for run
 
 We will help you to contribute in different areas like filing issues, developing features, fixing critical bugs and getting your work reviewed and merged.
 
-If you have questions about the development process, feel free to jump into our [Slack Channel](https://github.com/volcano-sh/volcano/blob/master/slack-invitation) or join our [mailing list](https://groups.google.com/forum/#!forum/volcano-sh).
+If you have questions about the development process, feel free to jump into our [Slack Channel](https://volcano-sh.slack.com/) or join our [mailing list](https://groups.google.com/forum/#!forum/volcano-sh).
 
 ## Find something to work on
 
@@ -51,7 +51,7 @@ Here is how you get started.
 
 There are [multiple repositories](https://github.com/volcano-sh/) within the Volcano organization.
 Each repository has beginner-friendly issues that provide a good first issue.
-For example, [Volcano-Issues](https://github.com/volcano-sh/volcano) has [help wanted](https://github.com/volcano-sh/volcano/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) and [good first issue](https://github.com/volcano-sh/volcano/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) labels for issues that should not need deep knowledge of the system.
+For example, [Volcano-Issues](https://github.com/volcano-sh/volcano/issues) has [help wanted](https://github.com/volcano-sh/volcano/issues?q=is%3Aopen+is%3Aissue+label%3A%22help+wanted%22) and [good first issue](https://github.com/volcano-sh/volcano/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22) labels for issues that should not need deep knowledge of the system.
 We can help new contributors who wish to work on such issues.
 
 Another good way to contribute is to find a documentation improvement, such as a missing/broken link.
@@ -59,7 +59,7 @@ Another good way to contribute is to find a documentation improvement, such as a
 #### Work on an issue
 
 When you are willing to take on an issue, you can assign it to yourself. Just reply with `/assign` or `/assign @yourself` on an issue,
-then the robot will assign the issue to you and your name will present at `Assignees` list.
+then the robot will assign the issue to you and your name will be present on the `Assignees` list.
 
 ### File an Issue
 
@@ -111,7 +111,7 @@ The subject line should feature the what and the body of the commit should descr
 ```
 scripts: add test codes for metamanager
 
-this add some unit test codes to imporve code coverage for metamanager
+this adds some unit test codes to improve code coverage for metamanager
 
 Fixes #12
 ```
@@ -136,7 +136,7 @@ There are multiple types of tests.
 The location of the test code varies with type, as do the specifics of the environment needed to successfully run the test:
 
 * Unit: These confirm that a particular function behaves as intended. Unit test source code can be found adjacent to the corresponding source code within a given package. These are easily run locally by any developer.
-* Integration: These tests cover interactions of package components or interactions between Volcano components and Kubernetes control plane components like API server. 
+* Integration: These tests cover interactions of package components or interactions between Volcano components and Kubernetes control plane components like API server.
 * End-to-end ("e2e"): These are broad tests of overall system behavior and coherence. The e2e tests are in [Volcano e2e](https://github.com/volcano-sh/volcano/tree/master/test/e2e).
 
 Continuous integration will run these tests on PRs.

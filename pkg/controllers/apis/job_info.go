@@ -19,21 +19,21 @@ package apis
 import (
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	batch "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 )
 
-//JobInfo struct
+//JobInfo struct.
 type JobInfo struct {
 	Namespace string
 	Name      string
 
-	Job  *v1alpha1.Job
+	Job  *batch.Job
 	Pods map[string]map[string]*v1.Pod
 }
 
-//Clone function clones the k8s pod values to the JobInfo struct
+//Clone function clones the k8s pod values to the JobInfo struct.
 func (ji *JobInfo) Clone() *JobInfo {
 	job := &JobInfo{
 		Namespace: ji.Namespace,
@@ -53,23 +53,23 @@ func (ji *JobInfo) Clone() *JobInfo {
 	return job
 }
 
-//SetJob sets the volcano jobs values to the JobInfo struct
-func (ji *JobInfo) SetJob(job *v1alpha1.Job) {
+//SetJob sets the volcano jobs values to the JobInfo struct.
+func (ji *JobInfo) SetJob(job *batch.Job) {
 	ji.Name = job.Name
 	ji.Namespace = job.Namespace
 	ji.Job = job
 }
 
 //AddPod adds the k8s pod object values to the Pods field
-//of JobStruct if it doesn't exist. Otherwise it throws error
+//of JobStruct if it doesn't exist. Otherwise it throws error.
 func (ji *JobInfo) AddPod(pod *v1.Pod) error {
-	taskName, found := pod.Annotations[v1alpha1.TaskSpecKey]
+	taskName, found := pod.Annotations[batch.TaskSpecKey]
 	if !found {
-		return fmt.Errorf("failed to taskName of Pod <%s/%s>",
+		return fmt.Errorf("failed to find taskName of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
 	}
 
-	_, found = pod.Annotations[v1alpha1.JobVersion]
+	_, found = pod.Annotations[batch.JobVersion]
 	if !found {
 		return fmt.Errorf("failed to find jobVersion of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
@@ -86,14 +86,14 @@ func (ji *JobInfo) AddPod(pod *v1.Pod) error {
 	return nil
 }
 
-//UpdatePod updates the k8s pod object values to the existing pod
+//UpdatePod updates the k8s pod object values to the existing pod.
 func (ji *JobInfo) UpdatePod(pod *v1.Pod) error {
-	taskName, found := pod.Annotations[v1alpha1.TaskSpecKey]
+	taskName, found := pod.Annotations[batch.TaskSpecKey]
 	if !found {
 		return fmt.Errorf("failed to find taskName of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
 	}
-	_, found = pod.Annotations[v1alpha1.JobVersion]
+	_, found = pod.Annotations[batch.JobVersion]
 	if !found {
 		return fmt.Errorf("failed to find jobVersion of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
@@ -111,14 +111,14 @@ func (ji *JobInfo) UpdatePod(pod *v1.Pod) error {
 	return nil
 }
 
-//DeletePod deletes the given k8s pod from the JobInfo struct
+//DeletePod deletes the given k8s pod from the JobInfo struct.
 func (ji *JobInfo) DeletePod(pod *v1.Pod) error {
-	taskName, found := pod.Annotations[v1alpha1.TaskSpecKey]
+	taskName, found := pod.Annotations[batch.TaskSpecKey]
 	if !found {
 		return fmt.Errorf("failed to find taskName of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
 	}
-	_, found = pod.Annotations[v1alpha1.JobVersion]
+	_, found = pod.Annotations[batch.JobVersion]
 	if !found {
 		return fmt.Errorf("failed to find jobVersion of Pod <%s/%s>",
 			pod.Namespace, pod.Name)
@@ -132,24 +132,4 @@ func (ji *JobInfo) DeletePod(pod *v1.Pod) error {
 	}
 
 	return nil
-}
-
-//Request struct
-type Request struct {
-	Namespace string
-	JobName   string
-	TaskName  string
-
-	Event      v1alpha1.Event
-	ExitCode   int32
-	Action     v1alpha1.Action
-	JobVersion int32
-}
-
-//String function returns the request in string format
-func (r Request) String() string {
-	return fmt.Sprintf(
-		"Job: %s/%s, Task:%s, Event:%s, ExitCode:%d, Action:%s, JobVersion: %d",
-		r.Namespace, r.JobName, r.TaskName, r.Event, r.ExitCode, r.Action, r.JobVersion)
-
 }

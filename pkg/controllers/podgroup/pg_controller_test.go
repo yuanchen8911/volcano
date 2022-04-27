@@ -17,31 +17,43 @@ limitations under the License.
 package podgroup
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	kubeclient "k8s.io/client-go/kubernetes/fake"
 
-	scheduling "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
-	kubebatchclient "volcano.sh/volcano/pkg/client/clientset/versioned/fake"
+	scheduling "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	vcclient "volcano.sh/apis/pkg/client/clientset/versioned/fake"
+	"volcano.sh/volcano/pkg/controllers/framework"
 )
 
-func newFakeController() *Controller {
-	KubeClientSet := kubeclient.NewSimpleClientset()
-	KubeBatchClientSet := kubebatchclient.NewSimpleClientset()
-	sharedInformers := informers.NewSharedInformerFactory(KubeClientSet, 0)
+func newFakeController() *pgcontroller {
+	kubeClient := kubeclient.NewSimpleClientset()
+	vcClient := vcclient.NewSimpleClientset()
+	sharedInformers := informers.NewSharedInformerFactory(kubeClient, 0)
 
-	controller := NewPodgroupController(KubeClientSet, KubeBatchClientSet, sharedInformers, "volcano")
+	controller := &pgcontroller{}
+	opt := &framework.ControllerOption{
+		KubeClient:            kubeClient,
+		VolcanoClient:         vcClient,
+		SharedInformerFactory: sharedInformers,
+		SchedulerNames:        []string{"volcano"},
+	}
+
+	controller.Initialize(opt)
+
 	return controller
 }
 
 func TestAddPodGroup(t *testing.T) {
 	namespace := "test"
 	isController := true
+	blockOwnerDeletion := true
 
 	testCases := []struct {
 		name             string
@@ -74,7 +86,7 @@ func TestAddPodGroup(t *testing.T) {
 			},
 			expectedPodGroup: &scheduling.PodGroup{
 				TypeMeta: metav1.TypeMeta{
-					APIVersion: "scheduling.sigs.dev/v1alpha2",
+					APIVersion: "scheduling.volcano.sh/v1beta1",
 					Kind:       "PodGroup",
 				},
 				ObjectMeta: metav1.ObjectMeta{
@@ -111,7 +123,7 @@ func TestAddPodGroup(t *testing.T) {
 			},
 			expectedPodGroup: &scheduling.PodGroup{
 				TypeMeta: metav1.TypeMeta{
-					APIVersion: "scheduling.sigs.dev/v1alpha2",
+					APIVersion: "scheduling.volcano.sh/v1beta1",
 					Kind:       "PodGroup",
 				},
 				ObjectMeta: metav1.ObjectMeta{
@@ -119,11 +131,12 @@ func TestAddPodGroup(t *testing.T) {
 					Namespace: namespace,
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "v1",
-							Kind:       "Pod",
-							Name:       "pod1",
-							UID:        "7a09885b-b753-4924-9fba-77c0836bac20",
-							Controller: &isController,
+							APIVersion:         "v1",
+							Kind:               "Pod",
+							Name:               "pod1",
+							UID:                "7a09885b-b753-4924-9fba-77c0836bac20",
+							Controller:         &isController,
+							BlockOwnerDeletion: &blockOwnerDeletion,
 						},
 					},
 				},
@@ -137,7 +150,7 @@ func TestAddPodGroup(t *testing.T) {
 	for _, testCase := range testCases {
 		c := newFakeController()
 
-		pod, err := c.kubeClients.CoreV1().Pods(testCase.pod.Namespace).Create(testCase.pod)
+		pod, err := c.kubeClient.CoreV1().Pods(testCase.pod.Namespace).Create(context.TODO(), testCase.pod, metav1.CreateOptions{})
 		if err != nil {
 			t.Errorf("Case %s failed when creating pod for %v", testCase.name, err)
 		}
@@ -145,7 +158,7 @@ func TestAddPodGroup(t *testing.T) {
 		c.addPod(pod)
 		c.createNormalPodPGIfNotExist(pod)
 
-		pg, err := c.kbClients.SchedulingV1alpha2().PodGroups(pod.Namespace).Get(
+		pg, err := c.vcClient.SchedulingV1beta1().PodGroups(pod.Namespace).Get(context.TODO(),
 			testCase.expectedPodGroup.Name,
 			metav1.GetOptions{},
 		)
@@ -157,7 +170,7 @@ func TestAddPodGroup(t *testing.T) {
 			t.Errorf("Case %s failed, expect %v, got %v", testCase.name, testCase.expectedPodGroup, pg)
 		}
 
-		podAnnotation := pod.Annotations[scheduling.GroupNameAnnotationKey]
+		podAnnotation := pod.Annotations[scheduling.KubeGroupNameAnnotationKey]
 		if testCase.expectedPodGroup.Name != podAnnotation {
 			t.Errorf("Case %s failed, expect %v, got %v", testCase.name,
 				testCase.expectedPodGroup.Name, podAnnotation)

@@ -7,7 +7,6 @@ need to set up before being able to build and run the code.
 
 - [Setting up Go](#setting-up-go)
 - [Setting up Docker](#setting-up-docker)
-- [Other dependencies](#other-dependencies)
 - [Setting up Kubernetes](#setting-up-kubernetes)
 - [Setting up personal access token](#setting-up-a-personal-access-token)
 
@@ -18,7 +17,7 @@ To build, you'll need a Go development environment. If you haven't set up a Go d
 environment, please follow [these instructions](https://golang.org/doc/install)
 to install the Go tools.
 
-Volcano currently builds with Go 1.12
+Volcano currently builds with Go 1.14
 
 ## Setting up Docker
 
@@ -57,4 +56,4 @@ Alternatively you can [add your SSH keys](https://help.github.com/articles/addin
 ### What's next?
 
 Once you've set up the prerequisites, continue with [Using the Code Base](./development.md)
-for more details about how to build & test Volcano. 
+for more details about how to build & test Volcano.

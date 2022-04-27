@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+
+	"volcano.sh/volcano/pkg/kube"
 )
 
 func TestAddFlags(t *testing.T) {
@@ -37,13 +39,18 @@ func TestAddFlags(t *testing.T) {
 
 	// This is a snapshot of expected options parsed by args.
 	expected := &ServerOption{
-		SchedulerName:              defaultSchedulerName,
-		SchedulePeriod:             5 * time.Minute,
-		DefaultQueue:               defaultQueue,
-		ListenAddress:              defaultListenAddress,
-		KubeAPIBurst:               defaultBurst,
-		KubeAPIQPS:                 defaultQPS,
-		HealthzBindAddress:         "127.0.0.1:11251",
+		SchedulerName:  defaultSchedulerName,
+		SchedulePeriod: 5 * time.Minute,
+		DefaultQueue:   defaultQueue,
+		ListenAddress:  defaultListenAddress,
+		KubeClientOptions: kube.ClientOptions{
+			Master:     "",
+			KubeConfig: "",
+			QPS:        defaultQPS,
+			Burst:      defaultBurst,
+		},
+		PluginsDir:                 defaultPluginsDir,
+		HealthzBindAddress:         ":11251",
 		MinNodesToFind:             defaultMinNodesToFind,
 		MinPercentageOfNodesToFind: defaultMinPercentageOfNodesToFind,
 		PercentageOfNodesToFind:    defaultPercentageOfNodesToFind,

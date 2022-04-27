@@ -19,17 +19,16 @@ package gang
 import (
 	"fmt"
 
-	"github.com/golang/glog"
-
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog"
 
-	"volcano.sh/volcano/pkg/apis/scheduling"
-	"volcano.sh/volcano/pkg/apis/scheduling/v1alpha1"
-	"volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
+	"volcano.sh/apis/pkg/apis/scheduling"
+	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
+	"volcano.sh/volcano/pkg/scheduler/plugins/util"
 )
 
 // PluginName indicates name of volcano scheduler plugin.
@@ -59,11 +58,19 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 			}
 		}
 
+		if valid := job.CheckTaskMinAvailable(); !valid {
+			return &api.ValidateResult{
+				Pass:    false,
+				Reason:  v1beta1.NotEnoughPodsOfTaskReason,
+				Message: "Not enough valid pods of each task for gang-scheduling",
+			}
+		}
+
 		vtn := job.ValidTaskNum()
 		if vtn < job.MinAvailable {
 			return &api.ValidateResult{
 				Pass:   false,
-				Reason: v1alpha1.NotEnoughPodsReason,
+				Reason: v1beta1.NotEnoughPodsReason,
 				Message: fmt.Sprintf("Not enough valid tasks for gang-scheduling, valid: %d, min: %d",
 					vtn, job.MinAvailable),
 			}
@@ -73,25 +80,28 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 
 	ssn.AddJobValidFn(gp.Name(), validJobFn)
 
-	preemptableFn := func(preemptor *api.TaskInfo, preemptees []*api.TaskInfo) []*api.TaskInfo {
+	preemptableFn := func(preemptor *api.TaskInfo, preemptees []*api.TaskInfo) ([]*api.TaskInfo, int) {
 		var victims []*api.TaskInfo
+		jobOccupiedMap := map[api.JobID]int32{}
 
 		for _, preemptee := range preemptees {
 			job := ssn.Jobs[preemptee.Job]
-			occupid := job.ReadyTaskNum()
-			preemptable := job.MinAvailable <= occupid-1 || job.MinAvailable == 1
+			if _, found := jobOccupiedMap[job.UID]; !found {
+				jobOccupiedMap[job.UID] = job.ReadyTaskNum()
+			}
 
-			if !preemptable {
-				glog.V(3).Infof("Can not preempt task <%v/%v> because of gang-scheduling",
-					preemptee.Namespace, preemptee.Name)
-			} else {
+			if jobOccupiedMap[job.UID] > job.MinAvailable {
+				jobOccupiedMap[job.UID]--
 				victims = append(victims, preemptee)
+			} else {
+				klog.V(4).Infof("Can not preempt task <%v/%v> because job %s ready num(%d) <= MinAvailable(%d) for gang-scheduling",
+					preemptee.Namespace, preemptee.Name, job.Name, jobOccupiedMap[job.UID], job.MinAvailable)
 			}
 		}
 
-		glog.V(3).Infof("Victims from Gang plugins are %+v", victims)
+		klog.V(4).Infof("Victims from Gang plugins are %+v", victims)
 
-		return victims
+		return victims, util.Permit
 	}
 
 	// TODO(k82cn): Support preempt/reclaim batch job.
@@ -105,7 +115,7 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 		lReady := lv.Ready()
 		rReady := rv.Ready()
 
-		glog.V(4).Infof("Gang JobOrderFn: <%v/%v> is ready: %t, <%v/%v> is ready: %t",
+		klog.V(4).Infof("Gang JobOrderFn: <%v/%v> is ready: %t, <%v/%v> is ready: %t",
 			lv.Namespace, lv.Name, lReady, rv.Namespace, rv.Name, rReady)
 
 		if lReady && rReady {
@@ -126,12 +136,31 @@ func (gp *gangPlugin) OnSessionOpen(ssn *framework.Session) {
 	ssn.AddJobOrderFn(gp.Name(), jobOrderFn)
 	ssn.AddJobReadyFn(gp.Name(), func(obj interface{}) bool {
 		ji := obj.(*api.JobInfo)
-		return ji.Ready()
+		if ji.CheckTaskMinAvailableReady() && ji.Ready() {
+			return true
+		}
+		return false
 	})
-	ssn.AddJobPipelinedFn(gp.Name(), func(obj interface{}) bool {
+
+	pipelinedFn := func(obj interface{}) int {
 		ji := obj.(*api.JobInfo)
-		return ji.Pipelined()
-	})
+		occupied := ji.WaitingTaskNum() + ji.ReadyTaskNum()
+		if ji.CheckTaskMinAvailablePipelined() && occupied >= ji.MinAvailable {
+			return util.Permit
+		}
+		return util.Reject
+	}
+	ssn.AddJobPipelinedFn(gp.Name(), pipelinedFn)
+
+	jobStarvingFn := func(obj interface{}) bool {
+		ji := obj.(*api.JobInfo)
+		occupied := ji.WaitingTaskNum() + ji.ReadyTaskNum()
+		if ji.CheckTaskMinAvailablePipelined() && occupied < ji.MinAvailable {
+			return true
+		}
+		return false
+	}
+	ssn.AddJobStarvingFns(gp.Name(), jobStarvingFn)
 }
 
 func (gp *gangPlugin) OnSessionClose(ssn *framework.Session) {
@@ -139,13 +168,24 @@ func (gp *gangPlugin) OnSessionClose(ssn *framework.Session) {
 	var unScheduleJobCount int
 	for _, job := range ssn.Jobs {
 		if !job.Ready() {
-			unreadyTaskCount = job.MinAvailable - job.ReadyTaskNum()
+			schedulableTaskNum := func() (num int32) {
+				for _, task := range job.TaskStatusIndex[api.Pending] {
+					ctx := task.GetTransactionContext()
+					if task.LastTransaction != nil {
+						ctx = *task.LastTransaction
+					}
+					if api.AllocatedStatus(ctx.Status) {
+						num++
+					}
+				}
+				return num + job.ReadyTaskNum()
+			}
+			unreadyTaskCount = job.MinAvailable - schedulableTaskNum()
 			msg := fmt.Sprintf("%v/%v tasks in gang unschedulable: %v",
-				job.MinAvailable-job.ReadyTaskNum(), len(job.Tasks), job.FitError())
+				unreadyTaskCount, len(job.Tasks), job.FitError())
 			job.JobFitErrors = msg
 
 			unScheduleJobCount++
-			metrics.UpdateUnscheduleTaskCount(job.Name, int(unreadyTaskCount))
 			metrics.RegisterJobRetries(job.Name)
 
 			jc := &scheduling.PodGroupCondition{
@@ -153,12 +193,12 @@ func (gp *gangPlugin) OnSessionClose(ssn *framework.Session) {
 				Status:             v1.ConditionTrue,
 				LastTransitionTime: metav1.Now(),
 				TransitionID:       string(ssn.UID),
-				Reason:             v1alpha2.NotEnoughResourcesReason,
+				Reason:             v1beta1.NotEnoughResourcesReason,
 				Message:            msg,
 			}
 
-			if err := ssn.UpdateJobCondition(job, jc); err != nil {
-				glog.Errorf("Failed to update job <%s/%s> condition: %v",
+			if err := ssn.UpdatePodGroupCondition(job, jc); err != nil {
+				klog.Errorf("Failed to update job <%s/%s> condition: %v",
 					job.Namespace, job.Name, err)
 			}
 
@@ -173,7 +213,23 @@ func (gp *gangPlugin) OnSessionClose(ssn *framework.Session) {
 				job.NodesFitErrors[taskInfo.UID] = fitError
 				fitError.SetError(msg)
 			}
+		} else {
+			jc := &scheduling.PodGroupCondition{
+				Type:               scheduling.PodGroupScheduled,
+				Status:             v1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				TransitionID:       string(ssn.UID),
+				Reason:             "tasks in gang are ready to be scheduled",
+				Message:            "",
+			}
+
+			if err := ssn.UpdatePodGroupCondition(job, jc); err != nil {
+				klog.Errorf("Failed to update job <%s/%s> condition: %v",
+					job.Namespace, job.Name, err)
+			}
 		}
+		metrics.UpdateUnscheduleTaskCount(job.Name, int(unreadyTaskCount))
+		unreadyTaskCount = 0
 	}
 
 	metrics.UpdateUnscheduleJobCount(unScheduleJobCount)

@@ -17,37 +17,47 @@ limitations under the License.
 package queue
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeclient "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
-	schedulingv1alpha2 "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
-	vcclient "volcano.sh/volcano/pkg/client/clientset/versioned/fake"
+
+	schedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	vcclient "volcano.sh/apis/pkg/client/clientset/versioned/fake"
+	"volcano.sh/volcano/pkg/controllers/framework"
 )
 
-func newFakeController() *Controller {
+func newFakeController() *queuecontroller {
 	KubeBatchClientSet := vcclient.NewSimpleClientset()
 	KubeClientSet := kubeclient.NewSimpleClientset()
 
-	controller := NewQueueController(KubeClientSet, KubeBatchClientSet)
+	controller := &queuecontroller{}
+	opt := framework.ControllerOption{
+		VolcanoClient: KubeBatchClientSet,
+		KubeClient:    KubeClientSet,
+	}
+
+	controller.Initialize(&opt)
+
 	return controller
 }
 
 func TestAddQueue(t *testing.T) {
 	testCases := []struct {
 		Name        string
-		queue       *schedulingv1alpha2.Queue
+		queue       *schedulingv1beta1.Queue
 		ExpectValue int
 	}{
 		{
 			Name: "AddQueue",
-			queue: &schedulingv1alpha2.Queue{
+			queue: &schedulingv1beta1.Queue{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "c1",
 				},
-				Spec: schedulingv1alpha2.QueueSpec{
+				Spec: schedulingv1beta1.QueueSpec{
 					Weight: 1,
 				},
 			},
@@ -69,16 +79,16 @@ func TestAddQueue(t *testing.T) {
 func TestDeleteQueue(t *testing.T) {
 	testCases := []struct {
 		Name        string
-		queue       *schedulingv1alpha2.Queue
+		queue       *schedulingv1beta1.Queue
 		ExpectValue bool
 	}{
 		{
 			Name: "DeleteQueue",
-			queue: &schedulingv1alpha2.Queue{
+			queue: &schedulingv1beta1.Queue{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "c1",
 				},
-				Spec: schedulingv1alpha2.QueueSpec{
+				Spec: schedulingv1beta1.QueueSpec{
 					Weight: 1,
 				},
 			},
@@ -104,17 +114,17 @@ func TestAddPodGroup(t *testing.T) {
 
 	testCases := []struct {
 		Name        string
-		podGroup    *schedulingv1alpha2.PodGroup
+		podGroup    *schedulingv1beta1.PodGroup
 		ExpectValue int
 	}{
 		{
 			Name: "addpodgroup",
-			podGroup: &schedulingv1alpha2.PodGroup{
+			podGroup: &schedulingv1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pg1",
 					Namespace: namespace,
 				},
-				Spec: schedulingv1alpha2.PodGroupSpec{
+				Spec: schedulingv1beta1.PodGroupSpec{
 					Queue: "c1",
 				},
 			},
@@ -142,17 +152,17 @@ func TestDeletePodGroup(t *testing.T) {
 
 	testCases := []struct {
 		Name        string
-		podGroup    *schedulingv1alpha2.PodGroup
+		podGroup    *schedulingv1beta1.PodGroup
 		ExpectValue bool
 	}{
 		{
 			Name: "deletepodgroup",
-			podGroup: &schedulingv1alpha2.PodGroup{
+			podGroup: &schedulingv1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pg1",
 					Namespace: namespace,
 				},
-				Spec: schedulingv1alpha2.PodGroupSpec{
+				Spec: schedulingv1beta1.PodGroupSpec{
 					Queue: "c1",
 				},
 			},
@@ -179,34 +189,34 @@ func TestUpdatePodGroup(t *testing.T) {
 
 	testCases := []struct {
 		Name        string
-		podGroupold *schedulingv1alpha2.PodGroup
-		podGroupnew *schedulingv1alpha2.PodGroup
+		podGroupold *schedulingv1beta1.PodGroup
+		podGroupnew *schedulingv1beta1.PodGroup
 		ExpectValue int
 	}{
 		{
 			Name: "updatepodgroup",
-			podGroupold: &schedulingv1alpha2.PodGroup{
+			podGroupold: &schedulingv1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pg1",
 					Namespace: namespace,
 				},
-				Spec: schedulingv1alpha2.PodGroupSpec{
+				Spec: schedulingv1beta1.PodGroupSpec{
 					Queue: "c1",
 				},
-				Status: schedulingv1alpha2.PodGroupStatus{
-					Phase: schedulingv1alpha2.PodGroupPending,
+				Status: schedulingv1beta1.PodGroupStatus{
+					Phase: schedulingv1beta1.PodGroupPending,
 				},
 			},
-			podGroupnew: &schedulingv1alpha2.PodGroup{
+			podGroupnew: &schedulingv1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pg1",
 					Namespace: namespace,
 				},
-				Spec: schedulingv1alpha2.PodGroupSpec{
+				Spec: schedulingv1beta1.PodGroupSpec{
 					Queue: "c1",
 				},
-				Status: schedulingv1alpha2.PodGroupStatus{
-					Phase: schedulingv1alpha2.PodGroupRunning,
+				Status: schedulingv1beta1.PodGroupStatus{
+					Phase: schedulingv1beta1.PodGroupRunning,
 				},
 			},
 			ExpectValue: 1,
@@ -229,29 +239,29 @@ func TestSyncQueue(t *testing.T) {
 
 	testCases := []struct {
 		Name        string
-		podGroup    *schedulingv1alpha2.PodGroup
-		queue       *schedulingv1alpha2.Queue
+		podGroup    *schedulingv1beta1.PodGroup
+		queue       *schedulingv1beta1.Queue
 		ExpectValue int32
 	}{
 		{
 			Name: "syncQueue",
-			podGroup: &schedulingv1alpha2.PodGroup{
+			podGroup: &schedulingv1beta1.PodGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "pg1",
 					Namespace: namespace,
 				},
-				Spec: schedulingv1alpha2.PodGroupSpec{
+				Spec: schedulingv1beta1.PodGroupSpec{
 					Queue: "c1",
 				},
-				Status: schedulingv1alpha2.PodGroupStatus{
-					Phase: schedulingv1alpha2.PodGroupPending,
+				Status: schedulingv1beta1.PodGroupStatus{
+					Phase: schedulingv1beta1.PodGroupPending,
 				},
 			},
-			queue: &schedulingv1alpha2.Queue{
+			queue: &schedulingv1beta1.Queue{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "c1",
 				},
-				Spec: schedulingv1alpha2.QueueSpec{
+				Spec: schedulingv1beta1.QueueSpec{
 					Weight: 1,
 				},
 			},
@@ -268,10 +278,10 @@ func TestSyncQueue(t *testing.T) {
 
 		c.pgInformer.Informer().GetIndexer().Add(testcase.podGroup)
 		c.queueInformer.Informer().GetIndexer().Add(testcase.queue)
-		c.kbClient.SchedulingV1alpha2().Queues().Create(testcase.queue)
+		c.vcClient.SchedulingV1beta1().Queues().Create(context.TODO(), testcase.queue, metav1.CreateOptions{})
 
-		err := c.syncQueue(testcase.queue.Name)
-		item, _ := c.kbClient.SchedulingV1alpha2().Queues().Get(testcase.queue.Name, metav1.GetOptions{})
+		err := c.syncQueue(testcase.queue, nil)
+		item, _ := c.vcClient.SchedulingV1beta1().Queues().Get(context.TODO(), testcase.queue.Name, metav1.GetOptions{})
 		if err != nil && testcase.ExpectValue != item.Status.Pending {
 			t.Errorf("case %d (%s): expected: %v, got %v ", i, testcase.Name, testcase.ExpectValue, c.queue.Len())
 		}

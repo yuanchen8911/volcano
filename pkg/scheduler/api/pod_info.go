@@ -17,7 +17,18 @@ limitations under the License.
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
 	v1 "k8s.io/api/core/v1"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/klog"
+	"k8s.io/kubernetes/pkg/features"
+
+	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 // Refer k8s.io/kubernetes/pkg/scheduler/algorithm/predicates/predicates.go#GetResourceRequest.
@@ -61,6 +72,77 @@ func GetPodResourceRequest(pod *v1.Pod) *Resource {
 	return result
 }
 
+// GetPodPreemptable return volcano.sh/preemptable value for pod
+func GetPodPreemptable(pod *v1.Pod) bool {
+	// check annotaion first
+	if len(pod.Annotations) > 0 {
+		if value, found := pod.Annotations[v1beta1.PodPreemptable]; found {
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				klog.Warningf("invalid %s=%s", v1beta1.PodPreemptable, value)
+				return false
+			}
+			return b
+		}
+	}
+
+	// it annotation does not exit, check label
+	if len(pod.Labels) > 0 {
+		if value, found := pod.Labels[v1beta1.PodPreemptable]; found {
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				klog.Warningf("invalid %s=%s", v1beta1.PodPreemptable, value)
+				return false
+			}
+			return b
+		}
+	}
+
+	return false
+}
+
+// GetPodRevocableZone return volcano.sh/revocable-zone value for pod/podgroup
+func GetPodRevocableZone(pod *v1.Pod) string {
+	if len(pod.Annotations) > 0 {
+		if value, found := pod.Annotations[v1beta1.RevocableZone]; found {
+			if value != "*" {
+				return ""
+			}
+			return value
+		}
+
+		if value, found := pod.Annotations[v1beta1.PodPreemptable]; found {
+			if b, err := strconv.ParseBool(value); err == nil && b {
+				return "*"
+			}
+		}
+	}
+	return ""
+}
+
+// GetPodTopologyInfo return volcano.sh/numa-topology-policy value for pod
+func GetPodTopologyInfo(pod *v1.Pod) *TopologyInfo {
+	info := TopologyInfo{
+		ResMap: make(map[int]v1.ResourceList),
+	}
+
+	if len(pod.Annotations) > 0 {
+		if value, found := pod.Annotations[v1beta1.NumaPolicyKey]; found {
+			info.Policy = value
+		}
+
+		if value, found := pod.Annotations[topologyDecisionAnnotation]; found {
+			decision := PodResourceDecision{}
+			err := json.Unmarshal([]byte(value), &decision)
+			if err == nil {
+				info.ResMap = decision.NUMAResources
+			}
+		}
+	}
+
+	return &info
+}
+
 // GetPodResourceWithoutInitContainers returns Pod's resource request, it does not contain
 // init containers' resource request.
 func GetPodResourceWithoutInitContainers(pod *v1.Pod) *Resource {
@@ -69,5 +151,48 @@ func GetPodResourceWithoutInitContainers(pod *v1.Pod) *Resource {
 		result.Add(NewResource(container.Resources.Requests))
 	}
 
+	// if PodOverhead feature is supported, add overhead for running a pod
+	if pod.Spec.Overhead != nil && utilfeature.DefaultFeatureGate.Enabled(features.PodOverhead) {
+		result.Add(NewResource(pod.Spec.Overhead))
+	}
+
 	return result
+}
+
+// GetGPUIndex returns the ID of the GPU
+func GetGPUIndex(pod *v1.Pod) int {
+	if len(pod.Annotations) > 0 {
+		value, found := pod.Annotations[GPUIndex]
+		if found {
+			id, err := strconv.Atoi(value)
+			if err != nil {
+				klog.Errorf("invalid %s=%s", GPUIndex, value)
+				return -1
+			}
+			return id
+		}
+	}
+
+	return -1
+}
+
+func escapeJSONPointer(p string) string {
+	// Escaping reference name using https://tools.ietf.org/html/rfc6901
+	p = strings.Replace(p, "~", "~0", -1)
+	p = strings.Replace(p, "/", "~1", -1)
+	return p
+}
+
+// AddGPUIndexPatch returns the patch adding GPU index
+func AddGPUIndexPatch(id int) string {
+	return fmt.Sprintf(`[{"op": "add", "path": "/metadata/annotations/%s", "value":"%d"},`+
+		`{"op": "add", "path": "/metadata/annotations/%s", "value": "%d"}]`,
+		escapeJSONPointer(PredicateTime), time.Now().UnixNano(),
+		escapeJSONPointer(GPUIndex), id)
+}
+
+// RemoveGPUIndexPatch returns the patch removing GPU index
+func RemoveGPUIndexPatch() string {
+	return fmt.Sprintf(`[{"op": "remove", "path": "/metadata/annotations/%s"},`+
+		`{"op": "remove", "path": "/metadata/annotations/%s"}]`, escapeJSONPointer(PredicateTime), escapeJSONPointer(GPUIndex))
 }

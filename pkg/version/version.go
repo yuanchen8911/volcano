@@ -25,14 +25,14 @@ import (
 var (
 	// Version shows the version of volcano.
 	Version = "Not provided."
-	// GitSHA shoows the git commit id of volcano.
+	// GitSHA shows the git commit id of volcano.
 	GitSHA = "Not provided."
 	// Built shows the built time of the binary.
 	Built      = "Not provided."
 	apiVersion = "v1alpha1"
 )
 
-// PrintVersionAndExit prints versions from the array returned by Info() and exit
+// PrintVersionAndExit prints versions from the array returned by Info() and exit.
 func PrintVersionAndExit() {
 	for _, i := range Info(apiVersion) {
 		fmt.Printf("%v\n", i)
@@ -40,7 +40,7 @@ func PrintVersionAndExit() {
 	os.Exit(0)
 }
 
-// Info returns an array of various service versions
+// Info returns an array of various service versions.
 func Info(apiVersion string) []string {
 	return []string{
 		fmt.Sprintf("API Version: %s", apiVersion),

@@ -18,12 +18,13 @@ package job
 
 import (
 	"encoding/json"
-	"github.com/spf13/cobra"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	"github.com/spf13/cobra"
+
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
 )
 
 func TestDeleteJobJob(t *testing.T) {

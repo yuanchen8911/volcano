@@ -17,13 +17,15 @@ limitations under the License.
 package actions
 
 import (
-	"volcano.sh/volcano/pkg/scheduler/framework"
-
 	"volcano.sh/volcano/pkg/scheduler/actions/allocate"
 	"volcano.sh/volcano/pkg/scheduler/actions/backfill"
+	"volcano.sh/volcano/pkg/scheduler/actions/elect"
 	"volcano.sh/volcano/pkg/scheduler/actions/enqueue"
 	"volcano.sh/volcano/pkg/scheduler/actions/preempt"
 	"volcano.sh/volcano/pkg/scheduler/actions/reclaim"
+	"volcano.sh/volcano/pkg/scheduler/actions/reserve"
+	"volcano.sh/volcano/pkg/scheduler/actions/shuffle"
+	"volcano.sh/volcano/pkg/scheduler/framework"
 )
 
 func init() {
@@ -32,4 +34,7 @@ func init() {
 	framework.RegisterAction(backfill.New())
 	framework.RegisterAction(preempt.New())
 	framework.RegisterAction(enqueue.New())
+	framework.RegisterAction(elect.New())
+	framework.RegisterAction(reserve.New())
+	framework.RegisterAction(shuffle.New())
 }

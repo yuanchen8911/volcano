@@ -18,9 +18,11 @@ package fake
 
 import (
 	"fmt"
+	"net/http"
 
-	"github.com/googleapis/gnostic/OpenAPIv2"
+	openapi_v2 "github.com/googleapis/gnostic/openapiv2"
 
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/version"
@@ -49,17 +51,39 @@ func (c *FakeDiscovery) ServerResourcesForGroupVersion(groupVersion string) (*me
 			return resourceList, nil
 		}
 	}
-	return nil, fmt.Errorf("GroupVersion %q not found", groupVersion)
+	return nil, &errors.StatusError{
+		ErrStatus: metav1.Status{
+			Status:  metav1.StatusFailure,
+			Code:    http.StatusNotFound,
+			Reason:  metav1.StatusReasonNotFound,
+			Message: fmt.Sprintf("the server could not find the requested resource, GroupVersion %q not found", groupVersion),
+		}}
 }
 
 // ServerResources returns the supported resources for all groups and versions.
+// Deprecated: use ServerGroupsAndResources instead.
 func (c *FakeDiscovery) ServerResources() ([]*metav1.APIResourceList, error) {
+	_, rs, err := c.ServerGroupsAndResources()
+	return rs, err
+}
+
+// ServerGroupsAndResources returns the supported groups and resources for all groups and versions.
+func (c *FakeDiscovery) ServerGroupsAndResources() ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	sgs, err := c.ServerGroups()
+	if err != nil {
+		return nil, nil, err
+	}
+	resultGroups := []*metav1.APIGroup{}
+	for i := range sgs.Groups {
+		resultGroups = append(resultGroups, &sgs.Groups[i])
+	}
+
 	action := testing.ActionImpl{
 		Verb:     "get",
 		Resource: schema.GroupVersionResource{Resource: "resource"},
 	}
 	c.Invokes(action, nil)
-	return c.Resources, nil
+	return resultGroups, c.Resources, nil
 }
 
 // ServerPreferredResources returns the supported resources with the version

@@ -19,8 +19,9 @@ package plugins
 import (
 	"sync"
 
+	"volcano.sh/volcano/pkg/controllers/job/plugins/distributed-framework/tensorflow"
 	"volcano.sh/volcano/pkg/controllers/job/plugins/env"
-	"volcano.sh/volcano/pkg/controllers/job/plugins/interface"
+	pluginsinterface "volcano.sh/volcano/pkg/controllers/job/plugins/interface"
 	"volcano.sh/volcano/pkg/controllers/job/plugins/ssh"
 	"volcano.sh/volcano/pkg/controllers/job/plugins/svc"
 )
@@ -29,25 +30,26 @@ func init() {
 	RegisterPluginBuilder("ssh", ssh.New)
 	RegisterPluginBuilder("env", env.New)
 	RegisterPluginBuilder("svc", svc.New)
+	RegisterPluginBuilder("tensorflow", tensorflow.New)
 }
 
 var pluginMutex sync.Mutex
 
-// Plugin management
+// Plugin management.
 var pluginBuilders = map[string]PluginBuilder{}
 
-// PluginBuilder func prototype
+// PluginBuilder func prototype.
 type PluginBuilder func(pluginsinterface.PluginClientset, []string) pluginsinterface.PluginInterface
 
-// RegisterPluginBuilder register plugin builders
-func RegisterPluginBuilder(name string, pc func(pluginsinterface.PluginClientset, []string) pluginsinterface.PluginInterface) {
+// RegisterPluginBuilder register plugin builders.
+func RegisterPluginBuilder(name string, pc PluginBuilder) {
 	pluginMutex.Lock()
 	defer pluginMutex.Unlock()
 
 	pluginBuilders[name] = pc
 }
 
-// GetPluginBuilder returns plugin builder for a given plugin name
+// GetPluginBuilder returns plugin builder for a given plugin name.
 func GetPluginBuilder(name string) (PluginBuilder, bool) {
 	pluginMutex.Lock()
 	defer pluginMutex.Unlock()

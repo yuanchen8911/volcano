@@ -17,28 +17,34 @@ limitations under the License.
 package pluginsinterface
 
 import (
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 
-	vkv1 "volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	vcbatch "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 )
 
-// PluginClientset clientset
+// PluginClientset clientset.
 type PluginClientset struct {
 	KubeClients kubernetes.Interface
 }
 
-// PluginInterface interface
+// PluginInterface interface.
 type PluginInterface interface {
-	// The unique name of Plugin.
+	// Name returns the unique name of Plugin.
 	Name() string
 
-	// for all pod when createJobPod
-	OnPodCreate(pod *v1.Pod, job *vkv1.Job) error
+	// OnPodCreate is called for all pod when createJobPod
+	OnPodCreate(pod *v1.Pod, job *vcbatch.Job) error
 
-	// do once when syncJob
-	OnJobAdd(job *vkv1.Job) error
+	// OnJobAdd is called when do job initiation
+	// Note: it can be called multi times, must be idempotent
+	OnJobAdd(job *vcbatch.Job) error
 
-	// do once when killJob
-	OnJobDelete(job *vkv1.Job) error
+	// OnJobDelete is called when killJob
+	// Note: it can be called multi times, must be idempotent
+	OnJobDelete(job *vcbatch.Job) error
+
+	// OnJobUpdate is called when job updated
+	// Note: it can be called multi times, must be idempotent
+	OnJobUpdate(job *vcbatch.Job) error
 }

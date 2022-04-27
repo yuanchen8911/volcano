@@ -20,10 +20,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/golang/glog"
-
-	"k8s.io/api/core/v1"
-	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog"
+	k8sFramework "k8s.io/kubernetes/pkg/scheduler/framework"
 
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
@@ -39,7 +38,7 @@ const (
 	BinpackWeight = "binpack.weight"
 	// BinpackCPU is the key for weight of cpu
 	BinpackCPU = "binpack.cpu"
-	// BinpackMemory is the key for memory of cpu
+	// BinpackMemory is the key for weight of memory
 	BinpackMemory = "binpack.memory"
 
 	// BinpackResources is the key for additional resource key name
@@ -130,7 +129,11 @@ func calculateWeight(args framework.Arguments) priorityWeight {
 		weight.BinPackingMemory = 1
 	}
 
-	resourcesStr := args[BinpackResources]
+	resourcesStr, ok := args[BinpackResources].(string)
+	if !ok {
+		resourcesStr = ""
+	}
+
 	resources := strings.Split(resourcesStr, ",")
 	for _, resource := range resources {
 		resource = strings.TrimSpace(resource)
@@ -156,10 +159,10 @@ func (bp *binpackPlugin) Name() string {
 }
 
 func (bp *binpackPlugin) OnSessionOpen(ssn *framework.Session) {
-	glog.V(4).Infof("Enter binpack plugin ...")
-	if glog.V(4) {
+	klog.V(4).Infof("Enter binpack plugin ...")
+	if klog.V(4) {
 		defer func() {
-			glog.V(4).Infof("Leaving binpack plugin. %s ...", bp.weight.String())
+			klog.V(4).Infof("Leaving binpack plugin. %s ...", bp.weight.String())
 		}()
 
 		notFoundResource := []string{}
@@ -175,19 +178,19 @@ func (bp *binpackPlugin) OnSessionOpen(ssn *framework.Session) {
 				notFoundResource = append(notFoundResource, string(resource))
 			}
 		}
-		glog.V(4).Infof("resources [%s] record in weight but not found on any node", strings.Join(notFoundResource, ", "))
+		klog.V(4).Infof("resources [%s] record in weight but not found on any node", strings.Join(notFoundResource, ", "))
 	}
 
 	nodeOrderFn := func(task *api.TaskInfo, node *api.NodeInfo) (float64, error) {
 		binPackingScore := BinPackingScore(task, node, bp.weight)
 
-		glog.V(4).Infof("Binpack score for Task %s/%s on node %s is: %v", task.Namespace, task.Name, node.Name, binPackingScore)
+		klog.V(4).Infof("Binpack score for Task %s/%s on node %s is: %v", task.Namespace, task.Name, node.Name, binPackingScore)
 		return binPackingScore, nil
 	}
 	if bp.weight.BinPackingWeight != 0 {
 		ssn.AddNodeOrderFn(bp.Name(), nodeOrderFn)
 	} else {
-		glog.Infof("binpack weight is zero, skip node order function")
+		klog.Infof("binpack weight is zero, skip node order function")
 	}
 }
 
@@ -230,7 +233,7 @@ func BinPackingScore(task *api.TaskInfo, node *api.NodeInfo, weight priorityWeig
 		}
 
 		resourceScore := ResourceBinPackingScore(request, allocate, nodeUsed, resourceWeight)
-		glog.V(5).Infof("task %s/%s on node %s resource %s, need %f, used %f, allocatable %f, weight %d, score %f", task.Namespace, task.Name, node.Name, resource, request, nodeUsed, allocate, resourceWeight, resourceScore)
+		klog.V(5).Infof("task %s/%s on node %s resource %s, need %f, used %f, allocatable %f, weight %d, score %f", task.Namespace, task.Name, node.Name, resource, request, nodeUsed, allocate, resourceWeight, resourceScore)
 
 		score += resourceScore
 		weightSum += resourceWeight
@@ -238,9 +241,9 @@ func BinPackingScore(task *api.TaskInfo, node *api.NodeInfo, weight priorityWeig
 
 	// mapping the result from [0, weightSum] to [0, 10(MaxPriority)]
 	if weightSum > 0 {
-		score = score / float64(weightSum)
+		score /= float64(weightSum)
 	}
-	score *= schedulerapi.MaxPriority * float64(weight.BinPackingWeight)
+	score *= float64(k8sFramework.MaxNodeScore * int64(weight.BinPackingWeight))
 
 	return score
 }

@@ -26,7 +26,7 @@ import (
 
 func TestLoadSchedulerConf(t *testing.T) {
 	configuration := `
-actions: "allocate, backfill"
+actions: "enqueue, allocate, backfill"
 tiers:
 - plugins:
   - name: priority
@@ -54,7 +54,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 				{
 					Name:                  "gang",
@@ -67,7 +73,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 				{
 					Name:                  "conformance",
@@ -80,7 +92,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 			},
 		},
@@ -97,7 +115,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 				{
 					Name:                  "predicates",
@@ -110,7 +134,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 				{
 					Name:                  "proportion",
@@ -123,7 +153,13 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 				{
 					Name:                  "nodeorder",
@@ -136,18 +172,30 @@ tiers:
 					EnabledReclaimable:    &trueValue,
 					EnabledQueueOrder:     &trueValue,
 					EnabledPredicate:      &trueValue,
+					EnabledBestNode:       &trueValue,
 					EnabledNodeOrder:      &trueValue,
+					EnabledTargetJob:      &trueValue,
+					EnabledReservedNodes:  &trueValue,
+					EnabledJobEnqueued:    &trueValue,
+					EnabledVictim:         &trueValue,
+					EnabledJobStarving:    &trueValue,
 				},
 			},
 		},
 	}
 
-	_, tiers, err := loadSchedulerConf(configuration)
+	var expectedConfigurations []conf.Configuration
+
+	_, tiers, configurations, _, err := unmarshalSchedulerConf(configuration)
 	if err != nil {
 		t.Errorf("Failed to load scheduler configuration: %v", err)
 	}
 	if !reflect.DeepEqual(tiers, expectedTiers) {
 		t.Errorf("Failed to set default settings for plugins, expected: %+v, got %+v",
 			expectedTiers, tiers)
+	}
+	if !reflect.DeepEqual(configurations, expectedConfigurations) {
+		t.Errorf("Wrong configuration, expected: %+v, got %+v",
+			expectedConfigurations, configurations)
 	}
 }

@@ -1,19 +1,8 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 approvers:
-- saad-ali
-- thockin
-- jsafrane
-- matchstick
-- rootfs
-- gnufied
-- childsb
+- sig-storage-approvers
 reviewers:
-- saad-ali
-- jsafrane
-- rootfs
-- jingxu97
-- msau42
-- gnufied
-- verult
-- davidz627
+- sig-storage-reviewers
 labels:
 - sig/storage

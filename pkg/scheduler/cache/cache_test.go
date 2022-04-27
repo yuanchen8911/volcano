@@ -27,40 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"volcano.sh/volcano/pkg/scheduler/api"
+	"volcano.sh/volcano/pkg/scheduler/util"
 )
-
-func nodesEqual(l, r map[string]*api.NodeInfo) bool {
-	if len(l) != len(r) {
-		return false
-	}
-
-	for k, n := range l {
-		if !reflect.DeepEqual(n, r[k]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func jobsEqual(l, r map[api.JobID]*api.JobInfo) bool {
-	if len(l) != len(r) {
-		return false
-	}
-
-	for k, p := range l {
-		if !reflect.DeepEqual(p, r[k]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func cacheEqual(l, r *SchedulerCache) bool {
-	return nodesEqual(l.Nodes, r.Nodes) &&
-		jobsEqual(l.Jobs, r.Jobs)
-}
 
 func buildNode(name string, alloc v1.ResourceList) *v1.Node {
 	return &v1.Node{
@@ -108,13 +76,6 @@ func buildResourceList(cpu string, memory string) v1.ResourceList {
 		v1.ResourceCPU:    resource.MustParse(cpu),
 		v1.ResourceMemory: resource.MustParse(memory),
 	}
-}
-
-func buildResource(cpu string, memory string) *api.Resource {
-	return api.NewResource(v1.ResourceList{
-		v1.ResourceCPU:    resource.MustParse(cpu),
-		v1.ResourceMemory: resource.MustParse(memory),
-	})
 }
 
 func buildOwnerReference(owner string) metav1.OwnerReference {
@@ -171,6 +132,185 @@ func TestGetOrCreateJob(t *testing.T) {
 		if result != test.gotJob {
 			t.Errorf("case %d: \n expected %t, \n got %t \n",
 				i, test.gotJob, result)
+		}
+	}
+}
+
+func TestSchedulerCache_Bind_NodeWithSufficientResources(t *testing.T) {
+	owner := buildOwnerReference("j1")
+
+	cache := &SchedulerCache{
+		Jobs:  make(map[api.JobID]*api.JobInfo),
+		Nodes: make(map[string]*api.NodeInfo),
+		Binder: &util.FakeBinder{
+			Binds:   map[string]string{},
+			Channel: make(chan string),
+		},
+		BindFlowChannel: make(chan *api.TaskInfo, 5000),
+	}
+
+	pod := buildPod("c1", "p1", "", v1.PodPending, buildResourceList("1000m", "1G"),
+		[]metav1.OwnerReference{owner}, make(map[string]string))
+	cache.AddPod(pod)
+
+	node := buildNode("n1", buildResourceList("2000m", "10G"))
+	cache.AddNode(node)
+
+	task := api.NewTaskInfo(pod)
+	task.Job = "j1"
+	if err := cache.addTask(task); err != nil {
+		t.Errorf("failed to add task %v", err)
+	}
+	task.NodeName = "n1"
+	err := cache.AddBindTask(task)
+	if err != nil {
+		t.Errorf("failed to bind pod to node: %v", err)
+	}
+}
+
+func TestSchedulerCache_Bind_NodeWithInsufficientResources(t *testing.T) {
+	owner := buildOwnerReference("j1")
+
+	cache := &SchedulerCache{
+		Jobs:  make(map[api.JobID]*api.JobInfo),
+		Nodes: make(map[string]*api.NodeInfo),
+		Binder: &util.FakeBinder{
+			Binds:   map[string]string{},
+			Channel: make(chan string),
+		},
+		BindFlowChannel: make(chan *api.TaskInfo, 5000),
+	}
+
+	pod := buildPod("c1", "p1", "", v1.PodPending, buildResourceList("5000m", "50G"),
+		[]metav1.OwnerReference{owner}, make(map[string]string))
+	cache.AddPod(pod)
+
+	node := buildNode("n1", buildResourceList("2000m", "10G"))
+	cache.AddNode(node)
+
+	task := api.NewTaskInfo(pod)
+	task.Job = "j1"
+
+	if err := cache.addTask(task); err != nil {
+		t.Errorf("failed to add task %v", err)
+	}
+
+	task.NodeName = "n1"
+	taskBeforeBind := task.Clone()
+	nodeBeforeBind := cache.Nodes["n1"].Clone()
+
+	err := cache.AddBindTask(task)
+	if err == nil {
+		t.Errorf("expected bind to fail for node with insufficient resources")
+	}
+
+	_, taskAfterBind, err := cache.findJobAndTask(task)
+	if err != nil {
+		t.Errorf("expected to find task after failed bind")
+	}
+	if !reflect.DeepEqual(taskBeforeBind, taskAfterBind) {
+		t.Errorf("expected task to remain the same after failed bind: \n %#v\n %#v", taskBeforeBind, taskAfterBind)
+	}
+
+	nodeAfterBind := cache.Nodes["n1"].Clone()
+	if !reflect.DeepEqual(nodeBeforeBind, nodeAfterBind) {
+		t.Errorf("expected node to remain the same after failed bind")
+	}
+}
+
+func TestNodeOperation(t *testing.T) {
+	// case 1
+	node1 := buildNode("n1", buildResourceList("2000m", "10G"))
+	node2 := buildNode("n2", buildResourceList("4000m", "16G"))
+	node3 := buildNode("n3", buildResourceList("3000m", "12G"))
+	nodeInfo1 := api.NewNodeInfo(node1)
+	nodeInfo2 := api.NewNodeInfo(node2)
+	nodeInfo3 := api.NewNodeInfo(node3)
+	tests := []struct {
+		deletedNode *v1.Node
+		nodes       []*v1.Node
+		expected    *SchedulerCache
+		delExpect   *SchedulerCache
+	}{
+		{
+			deletedNode: node2,
+			nodes:       []*v1.Node{node1, node2, node3},
+			expected: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n1": nodeInfo1,
+					"n2": nodeInfo2,
+					"n3": nodeInfo3,
+				},
+				NodeList: []string{"n1", "n2", "n3"},
+			},
+			delExpect: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n1": nodeInfo1,
+					"n3": nodeInfo3,
+				},
+				NodeList: []string{"n1", "n3"},
+			},
+		},
+		{
+			deletedNode: node1,
+			nodes:       []*v1.Node{node1, node2, node3},
+			expected: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n1": nodeInfo1,
+					"n2": nodeInfo2,
+					"n3": nodeInfo3,
+				},
+				NodeList: []string{"n1", "n2", "n3"},
+			},
+			delExpect: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n2": nodeInfo2,
+					"n3": nodeInfo3,
+				},
+				NodeList: []string{"n2", "n3"},
+			},
+		},
+		{
+			deletedNode: node3,
+			nodes:       []*v1.Node{node1, node2, node3},
+			expected: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n1": nodeInfo1,
+					"n2": nodeInfo2,
+					"n3": nodeInfo3,
+				},
+				NodeList: []string{"n1", "n2", "n3"},
+			},
+			delExpect: &SchedulerCache{
+				Nodes: map[string]*api.NodeInfo{
+					"n1": nodeInfo1,
+					"n2": nodeInfo2,
+				},
+				NodeList: []string{"n1", "n2"},
+			},
+		},
+	}
+
+	for i, test := range tests {
+		cache := &SchedulerCache{
+			Nodes:    make(map[string]*api.NodeInfo),
+			NodeList: []string{},
+		}
+
+		for _, n := range test.nodes {
+			cache.AddNode(n)
+		}
+
+		if !reflect.DeepEqual(cache, test.expected) {
+			t.Errorf("case %d: \n expected %v, \n got %v \n",
+				i, test.expected, cache)
+		}
+
+		// delete node
+		cache.DeleteNode(test.deletedNode)
+		if !reflect.DeepEqual(cache, test.delExpect) {
+			t.Errorf("case %d: \n expected %v, \n got %v \n",
+				i, test.delExpect, cache)
 		}
 	}
 }

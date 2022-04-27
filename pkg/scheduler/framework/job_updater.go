@@ -6,11 +6,10 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/golang/glog"
-
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 
-	"volcano.sh/volcano/pkg/apis/scheduling"
+	"volcano.sh/apis/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
 )
 
@@ -85,18 +84,13 @@ func isPodGroupConditionsUpdated(newCondition, oldCondition []scheduling.PodGrou
 	return false
 }
 
-func isPodGroupStatusUpdated(newStatus, oldStatus *scheduling.PodGroupStatus) bool {
+func isPodGroupStatusUpdated(newStatus, oldStatus scheduling.PodGroupStatus) bool {
 	newCondition := newStatus.Conditions
 	newStatus.Conditions = nil
 	oldCondition := oldStatus.Conditions
 	oldStatus.Conditions = nil
 
-	shouldUpdate := !reflect.DeepEqual(newStatus, oldStatus) || isPodGroupConditionsUpdated(newCondition, oldCondition)
-
-	newStatus.Conditions = newCondition
-	oldStatus.Conditions = oldCondition
-
-	return shouldUpdate
+	return !reflect.DeepEqual(newStatus, oldStatus) || isPodGroupConditionsUpdated(newCondition, oldCondition)
 }
 
 // updateJob update specified job
@@ -104,19 +98,11 @@ func (ju *jobUpdater) updateJob(index int) {
 	job := ju.jobQueue[index]
 	ssn := ju.ssn
 
-	// If job is using PDB, ignore it.
-	// TODO(k82cn): remove it when removing PDB support
-	if job.PodGroup == nil {
-		ssn.cache.RecordJobStatusEvent(job)
-		return
-	}
-
 	job.PodGroup.Status = jobStatus(ssn, job)
 	oldStatus, found := ssn.podGroupStatus[job.UID]
-	updatePG := !found || isPodGroupStatusUpdated(&job.PodGroup.Status, oldStatus)
-
+	updatePG := !found || isPodGroupStatusUpdated(job.PodGroup.Status, oldStatus)
 	if _, err := ssn.cache.UpdateJobStatus(job, updatePG); err != nil {
-		glog.Errorf("Failed to update job <%s/%s>: %v",
+		klog.Errorf("Failed to update job <%s/%s>: %v",
 			job.Namespace, job.Name, err)
 	}
 }

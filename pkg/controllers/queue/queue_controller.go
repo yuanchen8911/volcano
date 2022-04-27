@@ -17,75 +17,113 @@ limitations under the License.
 package queue
 
 import (
+	"context"
 	"fmt"
-	"reflect"
 	"sync"
+	"time"
 
-	"github.com/golang/glog"
-	"k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
+	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 
-	schedulingv1alpha2 "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
-	kbclientset "volcano.sh/volcano/pkg/client/clientset/versioned"
-	kbinformerfactory "volcano.sh/volcano/pkg/client/informers/externalversions"
-	kbinformer "volcano.sh/volcano/pkg/client/informers/externalversions/scheduling/v1alpha2"
-	kblister "volcano.sh/volcano/pkg/client/listers/scheduling/v1alpha2"
+	busv1alpha1 "volcano.sh/apis/pkg/apis/bus/v1alpha1"
+	vcclientset "volcano.sh/apis/pkg/client/clientset/versioned"
+	versionedscheme "volcano.sh/apis/pkg/client/clientset/versioned/scheme"
+	informerfactory "volcano.sh/apis/pkg/client/informers/externalversions"
+	busv1alpha1informer "volcano.sh/apis/pkg/client/informers/externalversions/bus/v1alpha1"
+	schedulinginformer "volcano.sh/apis/pkg/client/informers/externalversions/scheduling/v1beta1"
+	busv1alpha1lister "volcano.sh/apis/pkg/client/listers/bus/v1alpha1"
+	schedulinglister "volcano.sh/apis/pkg/client/listers/scheduling/v1beta1"
+	"volcano.sh/volcano/pkg/controllers/apis"
+	"volcano.sh/volcano/pkg/controllers/framework"
+	queuestate "volcano.sh/volcano/pkg/controllers/queue/state"
 )
 
-// Controller manages queue status.
-type Controller struct {
+func init() {
+	framework.RegisterController(&queuecontroller{})
+}
+
+// queuecontroller manages queue status.
+type queuecontroller struct {
 	kubeClient kubernetes.Interface
-	kbClient   kbclientset.Interface
+	vcClient   vcclientset.Interface
 
 	// informer
-	queueInformer kbinformer.QueueInformer
-	pgInformer    kbinformer.PodGroupInformer
+	queueInformer schedulinginformer.QueueInformer
+	pgInformer    schedulinginformer.PodGroupInformer
 
 	// queueLister
-	queueLister kblister.QueueLister
+	queueLister schedulinglister.QueueLister
 	queueSynced cache.InformerSynced
 
 	// podGroup lister
-	pgLister kblister.PodGroupLister
+	pgLister schedulinglister.PodGroupLister
 	pgSynced cache.InformerSynced
 
-	// queues that need to be updated.
-	queue workqueue.RateLimitingInterface
+	cmdInformer busv1alpha1informer.CommandInformer
+	cmdLister   busv1alpha1lister.CommandLister
+	cmdSynced   cache.InformerSynced
 
-	pgMutex   sync.RWMutex
+	// queues that need to be updated.
+	queue        workqueue.RateLimitingInterface
+	commandQueue workqueue.RateLimitingInterface
+
+	pgMutex sync.RWMutex
+	// queue name -> podgroup namespace/name
 	podGroups map[string]map[string]struct{}
+
+	syncHandler        func(req *apis.Request) error
+	syncCommandHandler func(cmd *busv1alpha1.Command) error
+
+	enqueueQueue func(req *apis.Request)
+
+	recorder      record.EventRecorder
+	maxRequeueNum int
 }
 
-// NewQueueController creates a QueueController
-func NewQueueController(
-	kubeClient kubernetes.Interface,
-	kbClient kbclientset.Interface,
-) *Controller {
-	factory := kbinformerfactory.NewSharedInformerFactory(kbClient, 0)
-	queueInformer := factory.Scheduling().V1alpha2().Queues()
-	pgInformer := factory.Scheduling().V1alpha2().PodGroups()
-	c := &Controller{
-		kubeClient: kubeClient,
-		kbClient:   kbClient,
+func (c *queuecontroller) Name() string {
+	return "queue-controller"
+}
 
-		queueInformer: queueInformer,
-		pgInformer:    pgInformer,
+// NewQueueController creates a QueueController.
+func (c *queuecontroller) Initialize(opt *framework.ControllerOption) error {
+	c.vcClient = opt.VolcanoClient
+	c.kubeClient = opt.KubeClient
 
-		queueLister: queueInformer.Lister(),
-		queueSynced: queueInformer.Informer().HasSynced,
+	factory := informerfactory.NewSharedInformerFactory(c.vcClient, 0)
+	queueInformer := factory.Scheduling().V1beta1().Queues()
+	pgInformer := factory.Scheduling().V1beta1().PodGroups()
 
-		pgLister: pgInformer.Lister(),
-		pgSynced: pgInformer.Informer().HasSynced,
+	eventBroadcaster := record.NewBroadcaster()
+	eventBroadcaster.StartLogging(klog.Infof)
+	eventBroadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: c.kubeClient.CoreV1().Events("")})
 
-		queue:     workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
-		podGroups: make(map[string]map[string]struct{}),
+	c.queueInformer = queueInformer
+	c.pgInformer = pgInformer
+	c.queueLister = queueInformer.Lister()
+	c.queueSynced = queueInformer.Informer().HasSynced
+	c.pgLister = pgInformer.Lister()
+	c.pgSynced = pgInformer.Informer().HasSynced
+	c.queue = workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	c.commandQueue = workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	c.podGroups = make(map[string]map[string]struct{})
+	c.recorder = eventBroadcaster.NewRecorder(versionedscheme.Scheme, v1.EventSource{Component: "vc-controller-manager"})
+	c.maxRequeueNum = opt.MaxRequeueNum
+	if c.maxRequeueNum < 0 {
+		c.maxRequeueNum = -1
 	}
 
 	queueInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.addQueue,
+		UpdateFunc: c.updateQueue,
 		DeleteFunc: c.deleteQueue,
 	})
 
@@ -95,196 +133,198 @@ func NewQueueController(
 		DeleteFunc: c.deletePodGroup,
 	})
 
-	return c
+	c.cmdInformer = informerfactory.NewSharedInformerFactory(c.vcClient, 0).Bus().V1alpha1().Commands()
+	c.cmdInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
+		FilterFunc: func(obj interface{}) bool {
+			switch v := obj.(type) {
+			case *busv1alpha1.Command:
+				return IsQueueReference(v.TargetObject)
+			default:
+				return false
+			}
+		},
+		Handler: cache.ResourceEventHandlerFuncs{
+			AddFunc: c.addCommand,
+		},
+	})
+	c.cmdLister = c.cmdInformer.Lister()
+	c.cmdSynced = c.cmdInformer.Informer().HasSynced
+
+	queuestate.SyncQueue = c.syncQueue
+	queuestate.OpenQueue = c.openQueue
+	queuestate.CloseQueue = c.closeQueue
+
+	c.syncHandler = c.handleQueue
+	c.syncCommandHandler = c.handleCommand
+
+	c.enqueueQueue = c.enqueue
+
+	return nil
 }
 
-// Run starts QueueController
-func (c *Controller) Run(stopCh <-chan struct{}) {
+// Run starts QueueController.
+func (c *queuecontroller) Run(stopCh <-chan struct{}) {
+	defer utilruntime.HandleCrash()
+	defer c.queue.ShutDown()
+	defer c.commandQueue.ShutDown()
+
+	klog.Infof("Starting queue controller.")
+	defer klog.Infof("Shutting down queue controller.")
 
 	go c.queueInformer.Informer().Run(stopCh)
 	go c.pgInformer.Informer().Run(stopCh)
+	go c.cmdInformer.Informer().Run(stopCh)
 
-	if !cache.WaitForCacheSync(stopCh, c.queueSynced, c.pgSynced) {
-		glog.Errorf("unable to sync caches for queue controller")
+	if !cache.WaitForCacheSync(stopCh, c.queueSynced, c.pgSynced, c.cmdSynced) {
+		klog.Errorf("unable to sync caches for queue controller.")
 		return
 	}
 
 	go wait.Until(c.worker, 0, stopCh)
-	glog.Infof("QueueController is running ...... ")
+	go wait.Until(c.commandWorker, 0, stopCh)
+
+	<-stopCh
 }
 
 // worker runs a worker thread that just dequeues items, processes them, and
 // marks them done. You may run as many of these in parallel as you wish; the
 // workqueue guarantees that they will not end up processing the same `queue`
 // at the same time.
-func (c *Controller) worker() {
+func (c *queuecontroller) worker() {
 	for c.processNextWorkItem() {
 	}
 }
 
-func (c *Controller) processNextWorkItem() bool {
-	eKey, quit := c.queue.Get()
-	if quit {
+func (c *queuecontroller) processNextWorkItem() bool {
+	obj, shutdown := c.queue.Get()
+	if shutdown {
 		return false
 	}
-	defer c.queue.Done(eKey)
+	defer c.queue.Done(obj)
 
-	if err := c.syncQueue(eKey.(string)); err != nil {
-		glog.V(2).Infof("Error syncing queues %q, retrying. Error: %v", eKey, err)
-		c.queue.AddRateLimited(eKey)
+	req, ok := obj.(*apis.Request)
+	if !ok {
+		klog.Errorf("%v is not a valid queue request struct.", obj)
 		return true
 	}
 
-	c.queue.Forget(eKey)
+	err := c.syncHandler(req)
+	c.handleQueueErr(err, obj)
+
 	return true
 }
 
-func (c *Controller) getPodGroups(key string) ([]string, error) {
-	c.pgMutex.RLock()
-	defer c.pgMutex.RUnlock()
+func (c *queuecontroller) handleQueue(req *apis.Request) error {
+	startTime := time.Now()
+	defer func() {
+		klog.V(4).Infof("Finished syncing queue %s (%v).", req.QueueName, time.Since(startTime))
+	}()
 
-	if c.podGroups[key] == nil {
-		return nil, fmt.Errorf("queue %s has not been seen or deleted", key)
-	}
-	podGroups := make([]string, 0, len(c.podGroups[key]))
-	for pgKey := range c.podGroups[key] {
-		podGroups = append(podGroups, pgKey)
-	}
-
-	return podGroups, nil
-}
-
-func (c *Controller) syncQueue(key string) error {
-	glog.V(4).Infof("Begin sync queue %s", key)
-
-	podGroups, err := c.getPodGroups(key)
+	queue, err := c.queueLister.Get(req.QueueName)
 	if err != nil {
-		return err
-	}
-
-	queueStatus := schedulingv1alpha2.QueueStatus{}
-
-	for _, pgKey := range podGroups {
-		// Ignore error here, tt can not occur.
-		ns, name, _ := cache.SplitMetaNamespaceKey(pgKey)
-
-		// TODO: check NotFound error and sync local cache.
-		pg, err := c.pgLister.PodGroups(ns).Get(name)
-		if err != nil {
-			return err
-		}
-
-		switch pg.Status.Phase {
-		case schedulingv1alpha2.PodGroupPending:
-			queueStatus.Pending++
-		case schedulingv1alpha2.PodGroupRunning:
-			queueStatus.Running++
-		case schedulingv1alpha2.PodGroupUnknown:
-			queueStatus.Unknown++
-		case schedulingv1alpha2.PodGroupInqueue:
-			queueStatus.Inqueue++
-		}
-	}
-
-	queue, err := c.queueLister.Get(key)
-	if err != nil {
-		if errors.IsNotFound(err) {
-			glog.V(2).Infof("queue %s has been deleted", key)
+		if apierrors.IsNotFound(err) {
+			klog.V(4).Infof("Queue %s has been deleted.", req.QueueName)
 			return nil
 		}
-		// TODO: do not retry to syncQueue for this error
-		return err
+
+		return fmt.Errorf("get queue %s failed for %v", req.QueueName, err)
 	}
 
-	// ignore update when status does not change
-	if reflect.DeepEqual(queueStatus, queue.Status) {
-		return nil
+	queueState := queuestate.NewState(queue)
+	if queueState == nil {
+		return fmt.Errorf("queue %s state %s is invalid", queue.Name, queue.Status.State)
 	}
 
-	newQueue := queue.DeepCopy()
-	newQueue.Status = queueStatus
-
-	if _, err := c.kbClient.SchedulingV1alpha2().Queues().UpdateStatus(newQueue); err != nil {
-		glog.Errorf("Failed to update status of Queue %s: %v", newQueue.Name, err)
-		return err
+	klog.V(4).Infof("Begin execute %s action for queue %s, current status %s", req.Action, req.QueueName, queue.Status.State)
+	if err := queueState.Execute(req.Action); err != nil {
+		return fmt.Errorf("sync queue %s failed for %v, event is %v, action is %s",
+			req.QueueName, err, req.Event, req.Action)
 	}
 
 	return nil
 }
 
-func (c *Controller) addQueue(obj interface{}) {
-	queue := obj.(*schedulingv1alpha2.Queue)
-	c.queue.Add(queue.Name)
+func (c *queuecontroller) handleQueueErr(err error, obj interface{}) {
+	if err == nil {
+		c.queue.Forget(obj)
+		return
+	}
+
+	if c.maxRequeueNum == -1 || c.queue.NumRequeues(obj) < c.maxRequeueNum {
+		klog.V(4).Infof("Error syncing queue request %v for %v.", obj, err)
+		c.queue.AddRateLimited(obj)
+		return
+	}
+
+	req, _ := obj.(*apis.Request)
+	c.recordEventsForQueue(req.QueueName, v1.EventTypeWarning, string(req.Action),
+		fmt.Sprintf("%v queue failed for %v", req.Action, err))
+	klog.V(2).Infof("Dropping queue request %v out of the queue for %v.", obj, err)
+	c.queue.Forget(obj)
 }
 
-func (c *Controller) deleteQueue(obj interface{}) {
-	queue, ok := obj.(*schedulingv1alpha2.Queue)
+func (c *queuecontroller) commandWorker() {
+	for c.processNextCommand() {
+	}
+}
+
+func (c *queuecontroller) processNextCommand() bool {
+	obj, shutdown := c.commandQueue.Get()
+	if shutdown {
+		return false
+	}
+	defer c.commandQueue.Done(obj)
+
+	cmd, ok := obj.(*busv1alpha1.Command)
 	if !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			glog.Errorf("Couldn't get object from tombstone %#v", obj)
-			return
-		}
-		queue, ok = tombstone.Obj.(*schedulingv1alpha2.Queue)
-		if !ok {
-			glog.Errorf("Tombstone contained object that is not a Queue: %#v", obj)
-			return
-		}
+		klog.Errorf("%v is not a valid Command struct.", obj)
+		return true
 	}
 
-	c.pgMutex.Lock()
-	defer c.pgMutex.Unlock()
-	delete(c.podGroups, queue.Name)
+	err := c.syncCommandHandler(cmd)
+	c.handleCommandErr(err, obj)
+
+	return true
 }
 
-func (c *Controller) addPodGroup(obj interface{}) {
-	pg := obj.(*schedulingv1alpha2.PodGroup)
-	key, _ := cache.MetaNamespaceKeyFunc(obj)
+func (c *queuecontroller) handleCommand(cmd *busv1alpha1.Command) error {
+	startTime := time.Now()
+	defer func() {
+		klog.V(4).Infof("Finished syncing command %s/%s (%v).", cmd.Namespace, cmd.Name, time.Since(startTime))
+	}()
 
-	c.pgMutex.Lock()
-	defer c.pgMutex.Unlock()
+	err := c.vcClient.BusV1alpha1().Commands(cmd.Namespace).Delete(context.TODO(), cmd.Name, metav1.DeleteOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 
-	if c.podGroups[pg.Spec.Queue] == nil {
-		c.podGroups[pg.Spec.Queue] = make(map[string]struct{})
+		return fmt.Errorf("failed to delete command <%s/%s> for %v", cmd.Namespace, cmd.Name, err)
 	}
-	c.podGroups[pg.Spec.Queue][key] = struct{}{}
 
-	// enqueue
-	c.queue.Add(pg.Spec.Queue)
+	req := &apis.Request{
+		QueueName: cmd.TargetObject.Name,
+		Event:     busv1alpha1.CommandIssuedEvent,
+		Action:    busv1alpha1.Action(cmd.Action),
+	}
+
+	c.enqueueQueue(req)
+
+	return nil
 }
 
-func (c *Controller) updatePodGroup(old, new interface{}) {
-	oldPG := old.(*schedulingv1alpha2.PodGroup)
-	newPG := new.(*schedulingv1alpha2.PodGroup)
-
-	// Note: we have no use case update PodGroup.Spec.Queue
-	// So do not consider it here.
-	if oldPG.Status.Phase != newPG.Status.Phase {
-		c.queue.Add(newPG.Spec.Queue)
-	}
-}
-
-func (c *Controller) deletePodGroup(obj interface{}) {
-	pg, ok := obj.(*schedulingv1alpha2.PodGroup)
-	if !ok {
-		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
-		if !ok {
-			glog.Errorf("Couldn't get object from tombstone %#v", obj)
-			return
-		}
-		pg, ok = tombstone.Obj.(*schedulingv1alpha2.PodGroup)
-		if !ok {
-			glog.Errorf("Tombstone contained object that is not a PodGroup: %#v", obj)
-			return
-		}
+func (c *queuecontroller) handleCommandErr(err error, obj interface{}) {
+	if err == nil {
+		c.commandQueue.Forget(obj)
+		return
 	}
 
-	key, _ := cache.MetaNamespaceKeyFunc(obj)
+	if c.maxRequeueNum == -1 || c.commandQueue.NumRequeues(obj) < c.maxRequeueNum {
+		klog.V(4).Infof("Error syncing command %v for %v.", obj, err)
+		c.commandQueue.AddRateLimited(obj)
+		return
+	}
 
-	c.pgMutex.Lock()
-	defer c.pgMutex.Unlock()
-
-	delete(c.podGroups[pg.Spec.Queue], key)
-
-	c.queue.Add(pg.Spec.Queue)
+	klog.V(2).Infof("Dropping command %v out of the queue for %v.", obj, err)
+	c.commandQueue.Forget(obj)
 }

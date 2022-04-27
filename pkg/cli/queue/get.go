@@ -17,6 +17,7 @@ limitations under the License.
 package queue
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -24,8 +25,9 @@ import (
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
-	"volcano.sh/volcano/pkg/client/clientset/versioned"
+
+	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	"volcano.sh/apis/pkg/client/clientset/versioned"
 )
 
 type getFlags struct {
@@ -36,15 +38,14 @@ type getFlags struct {
 
 var getQueueFlags = &getFlags{}
 
-// InitGetFlags is used to init all flags
+// InitGetFlags is used to init all flags.
 func InitGetFlags(cmd *cobra.Command) {
 	initFlags(cmd, &getQueueFlags.commonFlags)
 
 	cmd.Flags().StringVarP(&getQueueFlags.Name, "name", "n", "", "the name of queue")
-
 }
 
-// GetQueue gets a queue
+// GetQueue gets a queue.
 func GetQueue() error {
 	config, err := buildConfig(getQueueFlags.Master, getQueueFlags.Kubeconfig)
 	if err != nil {
@@ -57,7 +58,7 @@ func GetQueue() error {
 	}
 
 	queueClient := versioned.NewForConfigOrDie(config)
-	queue, err := queueClient.SchedulingV1alpha2().Queues().Get(getQueueFlags.Name, metav1.GetOptions{})
+	queue, err := queueClient.SchedulingV1beta1().Queues().Get(context.TODO(), getQueueFlags.Name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -67,15 +68,16 @@ func GetQueue() error {
 	return nil
 }
 
-// PrintQueue prints queue information
-func PrintQueue(queue *v1alpha2.Queue, writer io.Writer) {
-	_, err := fmt.Fprintf(writer, "%-25s%-8s%-8s%-8s%-8s\n",
-		Name, Weight, Pending, Running, Unknown)
+// PrintQueue prints queue information.
+func PrintQueue(queue *v1beta1.Queue, writer io.Writer) {
+	_, err := fmt.Fprintf(writer, "%-25s%-8s%-8s%-8s%-8s%-8s%-8s\n",
+		Name, Weight, State, Inqueue, Pending, Running, Unknown)
 	if err != nil {
 		fmt.Printf("Failed to print queue command result: %s.\n", err)
 	}
-	_, err = fmt.Fprintf(writer, "%-25s%-8d%-8d%-8d%-8d\n",
-		queue.Name, queue.Spec.Weight, queue.Status.Pending, queue.Status.Running, queue.Status.Unknown)
+	_, err = fmt.Fprintf(writer, "%-25s%-8d%-8s%-8d%-8d%-8d%-8d\n",
+		queue.Name, queue.Spec.Weight, queue.Status.State, queue.Status.Inqueue,
+		queue.Status.Pending, queue.Status.Running, queue.Status.Unknown)
 	if err != nil {
 		fmt.Printf("Failed to print queue command result: %s.\n", err)
 	}

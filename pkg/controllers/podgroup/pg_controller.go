@@ -17,129 +17,136 @@ limitations under the License.
 package podgroup
 
 import (
-	"github.com/golang/glog"
-
-	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/informers"
 	coreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
+	"k8s.io/klog"
 
-	scheduling "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
-	kbver "volcano.sh/volcano/pkg/client/clientset/versioned"
-	kbinfoext "volcano.sh/volcano/pkg/client/informers/externalversions"
-	kbinfo "volcano.sh/volcano/pkg/client/informers/externalversions/scheduling/v1alpha2"
-	kblister "volcano.sh/volcano/pkg/client/listers/scheduling/v1alpha2"
+	scheduling "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
+	vcclientset "volcano.sh/apis/pkg/client/clientset/versioned"
+	informerfactory "volcano.sh/apis/pkg/client/informers/externalversions"
+	schedulinginformer "volcano.sh/apis/pkg/client/informers/externalversions/scheduling/v1beta1"
+	schedulinglister "volcano.sh/apis/pkg/client/listers/scheduling/v1beta1"
+	"volcano.sh/volcano/pkg/controllers/framework"
 )
 
-// Controller the Podgroup Controller type
-type Controller struct {
-	kubeClients kubernetes.Interface
-	kbClients   kbver.Interface
+func init() {
+	framework.RegisterController(&pgcontroller{})
+}
+
+// pgcontroller the Podgroup pgcontroller type.
+type pgcontroller struct {
+	kubeClient kubernetes.Interface
+	vcClient   vcclientset.Interface
 
 	podInformer coreinformers.PodInformer
-	pgInformer  kbinfo.PodGroupInformer
+	pgInformer  schedulinginformer.PodGroupInformer
 
 	// A store of pods
 	podLister corelisters.PodLister
 	podSynced func() bool
 
 	// A store of podgroups
-	pgLister kblister.PodGroupLister
+	pgLister schedulinglister.PodGroupLister
 	pgSynced func() bool
 
 	queue workqueue.RateLimitingInterface
+
+	schedulerNames []string
 }
 
-// NewPodgroupController create new Podgroup Controller
-func NewPodgroupController(
-	kubeClient kubernetes.Interface,
-	kbClient kbver.Interface,
-	sharedInformers informers.SharedInformerFactory,
-	schedulerName string,
-) *Controller {
-	cc := &Controller{
-		kubeClients: kubeClient,
-		kbClients:   kbClient,
-
-		queue: workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter()),
-	}
-
-	cc.podInformer = sharedInformers.Core().V1().Pods()
-	cc.podLister = cc.podInformer.Lister()
-	cc.podSynced = cc.podInformer.Informer().HasSynced
-	cc.podInformer.Informer().AddEventHandler(
-		cache.FilteringResourceEventHandler{
-			FilterFunc: func(obj interface{}) bool {
-				switch obj.(type) {
-				case *v1.Pod:
-					pod := obj.(*v1.Pod)
-					if pod.Spec.SchedulerName == schedulerName &&
-						(pod.Annotations == nil || pod.Annotations[scheduling.GroupNameAnnotationKey] == "") {
-						return true
-					}
-					return false
-				default:
-					return false
-				}
-			},
-			Handler: cache.ResourceEventHandlerFuncs{
-				AddFunc: cc.addPod,
-			},
-		})
-
-	cc.pgInformer = kbinfoext.NewSharedInformerFactory(cc.kbClients, 0).Scheduling().V1alpha2().PodGroups()
-	cc.pgLister = cc.pgInformer.Lister()
-	cc.pgSynced = cc.pgInformer.Informer().HasSynced
-
-	return cc
+func (pg *pgcontroller) Name() string {
+	return "pg-controller"
 }
 
-// Run start NewPodgroupController
-func (cc *Controller) Run(stopCh <-chan struct{}) {
-	go cc.podInformer.Informer().Run(stopCh)
-	go cc.pgInformer.Informer().Run(stopCh)
+// Initialize create new Podgroup Controller.
+func (pg *pgcontroller) Initialize(opt *framework.ControllerOption) error {
+	pg.kubeClient = opt.KubeClient
+	pg.vcClient = opt.VolcanoClient
 
-	cache.WaitForCacheSync(stopCh, cc.podSynced, cc.pgSynced)
+	pg.queue = workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
-	go wait.Until(cc.worker, 0, stopCh)
+	pg.schedulerNames = make([]string, len(opt.SchedulerNames))
+	copy(pg.schedulerNames, opt.SchedulerNames)
 
-	glog.Infof("PodgroupController is running ...... ")
+	pg.podInformer = opt.SharedInformerFactory.Core().V1().Pods()
+	pg.podLister = pg.podInformer.Lister()
+	pg.podSynced = pg.podInformer.Informer().HasSynced
+	pg.podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: pg.addPod,
+	})
+
+	pg.pgInformer = informerfactory.NewSharedInformerFactory(pg.vcClient, 0).Scheduling().V1beta1().PodGroups()
+	pg.pgLister = pg.pgInformer.Lister()
+	pg.pgSynced = pg.pgInformer.Informer().HasSynced
+
+	return nil
 }
 
-func (cc *Controller) worker() {
-	for cc.processNextReq() {
+// Run start NewPodgroupController.
+func (pg *pgcontroller) Run(stopCh <-chan struct{}) {
+	go pg.podInformer.Informer().Run(stopCh)
+	go pg.pgInformer.Informer().Run(stopCh)
+
+	cache.WaitForCacheSync(stopCh, pg.podSynced, pg.pgSynced)
+
+	go wait.Until(pg.worker, 0, stopCh)
+
+	klog.Infof("PodgroupController is running ...... ")
+}
+
+func (pg *pgcontroller) worker() {
+	for pg.processNextReq() {
 	}
 }
 
-func (cc *Controller) processNextReq() bool {
-	obj, shutdown := cc.queue.Get()
+func (pg *pgcontroller) processNextReq() bool {
+	obj, shutdown := pg.queue.Get()
 	if shutdown {
-		glog.Errorf("Fail to pop item from queue")
+		klog.Errorf("Fail to pop item from queue")
 		return false
 	}
 
 	req := obj.(podRequest)
-	defer cc.queue.Done(req)
+	defer pg.queue.Done(req)
 
-	pod, err := cc.podLister.Pods(req.podNamespace).Get(req.podName)
+	pod, err := pg.podLister.Pods(req.podNamespace).Get(req.podName)
 	if err != nil {
-		glog.Errorf("Failed to get pod by <%v> from cache: %v", req, err)
+		klog.Errorf("Failed to get pod by <%v> from cache: %v", req, err)
+		return true
+	}
+
+	if !contains(pg.schedulerNames, pod.Spec.SchedulerName) {
+		klog.V(5).Infof("pod %v/%v field SchedulerName is not matched", pod.Namespace, pod.Name)
+		return true
+	}
+
+	if pod.Annotations != nil && pod.Annotations[scheduling.KubeGroupNameAnnotationKey] != "" {
+		klog.V(5).Infof("pod %v/%v has created podgroup", pod.Namespace, pod.Name)
 		return true
 	}
 
 	// normal pod use volcano
-	if err := cc.createNormalPodPGIfNotExist(pod); err != nil {
-		glog.Errorf("Failed to handle Pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
-		cc.queue.AddRateLimited(req)
+	if err := pg.createNormalPodPGIfNotExist(pod); err != nil {
+		klog.Errorf("Failed to handle Pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
+		pg.queue.AddRateLimited(req)
 		return true
 	}
 
 	// If no error, forget it.
-	cc.queue.Forget(req)
+	pg.queue.Forget(req)
 
 	return true
+}
+
+func contains(slice []string, element string) bool {
+	for _, item := range slice {
+		if item == element {
+			return true
+		}
+	}
+	return false
 }

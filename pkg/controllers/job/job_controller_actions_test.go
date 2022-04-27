@@ -17,15 +17,18 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	gomonkey "github.com/agiledragon/gomonkey/v2"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
-	schedulingv1alpha2 "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
+	schedulingv1alpha2 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 	"volcano.sh/volcano/pkg/controllers/apis"
 	"volcano.sh/volcano/pkg/controllers/job/state"
 )
@@ -42,16 +45,19 @@ func TestKillJobFunc(t *testing.T) {
 		JobInfo        *apis.JobInfo
 		Services       []v1.Service
 		ConfigMaps     []v1.ConfigMap
+		Secrets        []v1.Secret
 		Pods           map[string]*v1.Pod
 		Plugins        []string
-		ExpextVal      error
+		ExpectVal      error
 	}{
 		{
 			Name: "KillJob success Case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					UID:             "e7f18111-1cec-11ea-b688-fa163ec79500",
+					ResourceVersion: "100",
 				},
 			},
 			PodGroup: &schedulingv1alpha2.PodGroup{
@@ -80,10 +86,10 @@ func TestKillJobFunc(t *testing.T) {
 					},
 				},
 			},
-			ConfigMaps: []v1.ConfigMap{
+			Secrets: []v1.Secret{
 				{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job1-ssh",
+						Name:      "job1-e7f18111-1cec-11ea-b688-fa163ec79500-ssh",
 						Namespace: namespace,
 					},
 				},
@@ -93,7 +99,7 @@ func TestKillJobFunc(t *testing.T) {
 				"pod2": buildPod(namespace, "pod2", v1.PodRunning, nil),
 			},
 			Plugins:   []string{"svc", "ssh", "env"},
-			ExpextVal: nil,
+			ExpectVal: nil,
 		},
 	}
 
@@ -104,27 +110,27 @@ func TestKillJobFunc(t *testing.T) {
 			jobPlugins := make(map[string][]string)
 
 			for _, service := range testcase.Services {
-				_, err := fakeController.kubeClients.CoreV1().Services(namespace).Create(&service)
+				_, err := fakeController.kubeClient.CoreV1().Services(namespace).Create(context.TODO(), &service, metav1.CreateOptions{})
 				if err != nil {
 					t.Error("Error While Creating Service")
 				}
 			}
 
-			for _, configMap := range testcase.ConfigMaps {
-				_, err := fakeController.kubeClients.CoreV1().ConfigMaps(namespace).Create(&configMap)
+			for _, secret := range testcase.Secrets {
+				_, err := fakeController.kubeClient.CoreV1().Secrets(namespace).Create(context.TODO(), &secret, metav1.CreateOptions{})
 				if err != nil {
-					t.Error("Error While Creating ConfigMaps")
+					t.Error("Error While Creating Secret.")
 				}
 			}
 
 			for _, pod := range testcase.Pods {
-				_, err := fakeController.kubeClients.CoreV1().Pods(namespace).Create(pod)
+				_, err := fakeController.kubeClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
 				if err != nil {
 					t.Error("Error While Creating ConfigMaps")
 				}
 			}
 
-			_, err := fakeController.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.Job)
+			_, err := fakeController.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error While Creating Jobs")
 			}
@@ -140,28 +146,33 @@ func TestKillJobFunc(t *testing.T) {
 			testcase.JobInfo.Job = testcase.Job
 			testcase.JobInfo.Job.Spec.Plugins = jobPlugins
 
+			testcase.JobInfo.Job.Status.ControlledResources = map[string]string{}
+			for _, name := range testcase.Plugins {
+				testcase.JobInfo.Job.Status.ControlledResources["plugin-"+name] = name
+			}
+
 			err = fakeController.killJob(testcase.JobInfo, testcase.PodRetainPhase, testcase.UpdateStatus)
 			if err != nil {
-				t.Errorf("Case %d (%s): expected: No Error, but got error %s", i, testcase.Name, err.Error())
+				t.Errorf("Case %d (%s): expected: No Error, but got error %v.", i, testcase.Name, err)
 			}
 
 			for _, plugin := range testcase.Plugins {
 
 				if plugin == "svc" {
-					_, err = fakeController.kubeClients.CoreV1().Services(namespace).Get(testcase.Job.Name, metav1.GetOptions{})
+					_, err = fakeController.kubeClient.CoreV1().Services(namespace).Get(context.TODO(), testcase.Job.Name, metav1.GetOptions{})
 					if err == nil {
-						t.Errorf("Case %d (%s): expected: Service to be deleted, but not deleted because of error %s", i, testcase.Name, err.Error())
+						t.Errorf("Case %d (%s): expected: Service to be deleted, but not deleted.", i, testcase.Name)
 					}
 				}
 
 				if plugin == "ssh" {
-					_, err := fakeController.kubeClients.CoreV1().ConfigMaps(namespace).Get(fmt.Sprint(testcase.Job.Name, "-ssh"), metav1.GetOptions{})
+					_, err := fakeController.kubeClient.CoreV1().ConfigMaps(namespace).Get(context.TODO(),
+						fmt.Sprintf("%s-%s-%s", testcase.Job.Name, testcase.Job.UID, "ssh"), metav1.GetOptions{})
 					if err == nil {
-						t.Errorf("Case %d (%s): expected: ConfigMap to be deleted, but not deleted because of error %s", i, testcase.Name, err.Error())
+						t.Errorf("Case %d (%s): expected: Secret to be deleted, but not deleted.", i, testcase.Name)
 					}
 				}
 			}
-
 		})
 	}
 }
@@ -179,14 +190,15 @@ func TestSyncJobFunc(t *testing.T) {
 		Pods           map[string]*v1.Pod
 		Plugins        []string
 		TotalNumPods   int
-		ExpextVal      error
+		ExpectVal      error
 	}{
 		{
 			Name: "SyncJob success Case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 				Spec: v1alpha1.JobSpec{
 					Tasks: []v1alpha1.TaskSpec{
@@ -220,6 +232,13 @@ func TestSyncJobFunc(t *testing.T) {
 					Name:      "job1",
 					Namespace: namespace,
 				},
+				Spec: schedulingv1alpha2.PodGroupSpec{
+					MinResources:  &v1.ResourceList{},
+					MinTaskMember: map[string]int32{},
+				},
+				Status: schedulingv1alpha2.PodGroupStatus{
+					Phase: schedulingv1alpha2.PodGroupInqueue,
+				},
 			},
 			PodRetainPhase: state.PodRetainPhaseNone,
 			UpdateStatus:   nil,
@@ -239,13 +258,20 @@ func TestSyncJobFunc(t *testing.T) {
 			},
 			TotalNumPods: 6,
 			Plugins:      []string{"svc", "ssh", "env"},
-			ExpextVal:    nil,
+			ExpectVal:    nil,
 		},
 	}
 	for i, testcase := range testcases {
 
 		t.Run(testcase.Name, func(t *testing.T) {
 			fakeController := newFakeController()
+
+			patches := gomonkey.ApplyMethod(reflect.TypeOf(fakeController), "GetQueueInfo", func(_ *jobcontroller, _ string) (*schedulingv1alpha2.Queue, error) {
+				return &schedulingv1alpha2.Queue{}, nil
+			})
+
+			defer patches.Reset()
+
 			jobPlugins := make(map[string][]string)
 
 			for _, plugin := range testcase.Plugins {
@@ -254,14 +280,16 @@ func TestSyncJobFunc(t *testing.T) {
 			testcase.JobInfo.Job = testcase.Job
 			testcase.JobInfo.Job.Spec.Plugins = jobPlugins
 
+			fakeController.pgInformer.Informer().GetIndexer().Add(testcase.PodGroup)
+
 			for _, pod := range testcase.Pods {
-				_, err := fakeController.kubeClients.CoreV1().Pods(namespace).Create(pod)
+				_, err := fakeController.kubeClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
 				if err != nil {
 					t.Error("Error While Creating pods")
 				}
 			}
 
-			_, err := fakeController.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.Job)
+			_, err := fakeController.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Errorf("Expected no Error while creating job, but got error: %s", err)
 			}
@@ -272,11 +300,11 @@ func TestSyncJobFunc(t *testing.T) {
 			}
 
 			err = fakeController.syncJob(testcase.JobInfo, nil)
-			if err != testcase.ExpextVal {
+			if err != testcase.ExpectVal {
 				t.Errorf("Expected no error while syncing job, but got error: %s", err)
 			}
 
-			podList, err := fakeController.kubeClients.CoreV1().Pods(namespace).List(metav1.ListOptions{})
+			podList, err := fakeController.kubeClient.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 			if err != nil {
 				t.Errorf("Expected no error while listing pods, but got error %s in case %d", err, i)
 			}
@@ -299,8 +327,9 @@ func TestCreateJobIOIfNotExistFunc(t *testing.T) {
 			Name: "Create Job IO case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 				Spec: v1alpha1.JobSpec{
 					Volumes: []v1alpha1.VolumeSpec{
@@ -350,8 +379,9 @@ func TestCreatePVCFunc(t *testing.T) {
 			Name: "CreatePVC success Case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 			},
 			VolumeClaim: &v1.PersistentVolumeClaimSpec{
@@ -369,7 +399,7 @@ func TestCreatePVCFunc(t *testing.T) {
 			if err != testcase.ExpextVal {
 				t.Errorf("Expected return value to be equal to expected: %s, but got: %s", testcase.ExpextVal, err)
 			}
-			_, err = fakeController.kubeClients.CoreV1().PersistentVolumeClaims(namespace).Get("pvc1", metav1.GetOptions{})
+			_, err = fakeController.kubeClient.CoreV1().PersistentVolumeClaims(namespace).Get(context.TODO(), "pvc1", metav1.GetOptions{})
 			if err != nil {
 				t.Error("Expected PVC to get created, but not created")
 			}
@@ -389,8 +419,9 @@ func TestCreatePodGroupIfNotExistFunc(t *testing.T) {
 			Name: "CreatePodGroup success Case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Namespace: namespace,
-					Name:      "job1",
+					Namespace:       namespace,
+					Name:            "job1",
+					ResourceVersion: "100",
 				},
 			},
 			ExpextVal: nil,
@@ -401,18 +432,77 @@ func TestCreatePodGroupIfNotExistFunc(t *testing.T) {
 		t.Run(testcase.Name, func(t *testing.T) {
 			fakeController := newFakeController()
 
-			err := fakeController.createPodGroupIfNotExist(testcase.Job)
+			err := fakeController.createOrUpdatePodGroup(testcase.Job)
 			if err != testcase.ExpextVal {
 				t.Errorf("Expected return value to be equal to expected: %s, but got: %s", testcase.ExpextVal, err)
 			}
 
-			_, err = fakeController.vkClients.SchedulingV1alpha2().PodGroups(namespace).Get(testcase.Job.Name, metav1.GetOptions{})
+			_, err = fakeController.vcClient.SchedulingV1beta1().PodGroups(namespace).Get(context.TODO(), testcase.Job.Name, metav1.GetOptions{})
 			if err != nil {
 				t.Error("Expected PodGroup to get created, but not created")
 			}
 		})
 
 	}
+}
+
+func TestUpdatePodGroupIfJobUpdateFunc(t *testing.T) {
+	namespace := "test"
+
+	testcases := []struct {
+		Name      string
+		PodGroup  *schedulingv1alpha2.PodGroup
+		Job       *v1alpha1.Job
+		ExpectVal error
+	}{
+		{
+			Name: "UpdatePodGroup success Case",
+			PodGroup: &schedulingv1alpha2.PodGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+					Name:      "job1",
+				},
+				Spec: schedulingv1alpha2.PodGroupSpec{
+					MinResources: &v1.ResourceList{},
+				},
+			},
+			Job: &v1alpha1.Job{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace:       namespace,
+					Name:            "job1",
+					ResourceVersion: "100",
+				},
+				Spec: v1alpha1.JobSpec{
+					PriorityClassName: "new",
+				},
+			},
+			ExpectVal: nil,
+		},
+	}
+
+	for _, testcase := range testcases {
+		t.Run(testcase.Name, func(t *testing.T) {
+			fakeController := newFakeController()
+			fakeController.pgInformer.Informer().GetIndexer().Add(testcase.PodGroup)
+			fakeController.vcClient.SchedulingV1beta1().PodGroups(testcase.PodGroup.Namespace).Create(context.TODO(), testcase.PodGroup, metav1.CreateOptions{})
+
+			err := fakeController.createOrUpdatePodGroup(testcase.Job)
+			if err != testcase.ExpectVal {
+				t.Errorf("Expected return value to be equal to expected: %s, but got: %s", testcase.ExpectVal, err)
+			}
+
+			pg, err := fakeController.vcClient.SchedulingV1beta1().PodGroups(namespace).Get(context.TODO(), testcase.Job.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Error("Expected PodGroup to be created, but not created")
+			}
+			if pg.Spec.PriorityClassName != testcase.Job.Spec.PriorityClassName {
+				t.Errorf("Expected PodGroup.Spec.PriorityClassName to be updated to: %s, but got: %s", testcase.Job.Spec.PriorityClassName, pg.Spec.PriorityClassName)
+			}
+
+		})
+
+	}
+
 }
 
 func TestDeleteJobPod(t *testing.T) {
@@ -429,8 +519,9 @@ func TestDeleteJobPod(t *testing.T) {
 			Name: "DeleteJobPod success case",
 			Job: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 			},
 			Pods: map[string]*v1.Pod{
@@ -447,7 +538,7 @@ func TestDeleteJobPod(t *testing.T) {
 			fakeController := newFakeController()
 
 			for _, pod := range testcase.Pods {
-				_, err := fakeController.kubeClients.CoreV1().Pods(namespace).Create(pod)
+				_, err := fakeController.kubeClient.CoreV1().Pods(namespace).Create(context.TODO(), pod, metav1.CreateOptions{})
 				if err != nil {
 					t.Error("Expected error not to occur")
 				}
@@ -458,7 +549,7 @@ func TestDeleteJobPod(t *testing.T) {
 				t.Errorf("Expected return value to be equal to expected: %s, but got: %s", testcase.ExpextVal, err)
 			}
 
-			_, err = fakeController.kubeClients.CoreV1().Pods(namespace).Get("job1-task1-0", metav1.GetOptions{})
+			_, err = fakeController.kubeClient.CoreV1().Pods(namespace).Get(context.TODO(), "job1-task1-0", metav1.GetOptions{})
 			if err == nil {
 				t.Error("Expected Pod to be deleted but not deleted")
 			}

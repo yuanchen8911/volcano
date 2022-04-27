@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vulcan Authors.
+Copyright 2018 The Volcano Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -24,15 +25,13 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
-	vkbatchv1 "volcano.sh/volcano/pkg/apis/batch/v1alpha1"
-	vkbusv1 "volcano.sh/volcano/pkg/apis/bus/v1alpha1"
-	"volcano.sh/volcano/pkg/apis/helpers"
-	"volcano.sh/volcano/pkg/client/clientset/versioned"
+	vcbus "volcano.sh/apis/pkg/apis/bus/v1alpha1"
+	"volcano.sh/apis/pkg/apis/helpers"
+	"volcano.sh/apis/pkg/client/clientset/versioned"
 )
 
 func homeDir() string {
@@ -40,10 +39,6 @@ func homeDir() string {
 		return h
 	}
 	return os.Getenv("USERPROFILE") // windows
-}
-
-func buildConfig(master, kubeconfig string) (*rest.Config, error) {
-	return clientcmd.BuildConfigFromFlags(master, kubeconfig)
 }
 
 // populateResourceListV1 takes strings of form <resourceName1>=<value1>,<resourceName1>=<value2>
@@ -71,15 +66,15 @@ func populateResourceListV1(spec string) (v1.ResourceList, error) {
 	return result, nil
 }
 
-func createJobCommand(config *rest.Config, ns, name string, action vkbatchv1.Action) error {
+func createJobCommand(config *rest.Config, ns, name string, action vcbus.Action) error {
 	jobClient := versioned.NewForConfigOrDie(config)
-	job, err := jobClient.BatchV1alpha1().Jobs(ns).Get(name, metav1.GetOptions{})
+	job, err := jobClient.BatchV1alpha1().Jobs(ns).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
 
 	ctrlRef := metav1.NewControllerRef(job, helpers.JobKind)
-	cmd := &vkbusv1.Command{
+	cmd := &vcbus.Command{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: fmt.Sprintf("%s-%s-",
 				job.Name, strings.ToLower(string(action))),
@@ -92,7 +87,7 @@ func createJobCommand(config *rest.Config, ns, name string, action vkbatchv1.Act
 		Action:       string(action),
 	}
 
-	if _, err := jobClient.BusV1alpha1().Commands(ns).Create(cmd); err != nil {
+	if _, err := jobClient.BusV1alpha1().Commands(ns).Create(context.TODO(), cmd, metav1.CreateOptions{}); err != nil {
 		return err
 	}
 
@@ -106,14 +101,14 @@ func translateTimestampSince(timestamp metav1.Time) string {
 	return HumanDuration(time.Since(timestamp.Time))
 }
 
-// HumanDuration translate time.Duration to human readable time string
+// HumanDuration translate time.Duration to human readable time string.
 func HumanDuration(d time.Duration) string {
 	// Allow deviation no more than 2 seconds(excluded) to tolerate machine time
 	// inconsistence, it can be considered as almost now.
 	if seconds := int(d.Seconds()); seconds < -1 {
-		return fmt.Sprintf("<invalid>")
+		return "<invalid>"
 	} else if seconds < 0 {
-		return fmt.Sprintf("0s")
+		return "0s"
 	} else if seconds < 60*2 {
 		return fmt.Sprintf("%ds", seconds)
 	}
@@ -147,5 +142,5 @@ func HumanDuration(d time.Duration) string {
 	} else if hours < 24*365*8 {
 		return fmt.Sprintf("%dy%dd", hours/24/365, (hours/24)%365)
 	}
-	return fmt.Sprintf("%dy", int(hours/24/365))
+	return fmt.Sprintf("%dy", hours/24/365)
 }

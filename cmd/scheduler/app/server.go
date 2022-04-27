@@ -23,12 +23,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"volcano.sh/apis/pkg/apis/helpers"
 	"volcano.sh/volcano/cmd/scheduler/app/options"
-	"volcano.sh/volcano/pkg/apis/helpers"
+	"volcano.sh/volcano/pkg/kube"
 	"volcano.sh/volcano/pkg/scheduler"
+	"volcano.sh/volcano/pkg/scheduler/framework"
+	"volcano.sh/volcano/pkg/signals"
 	"volcano.sh/volcano/pkg/version"
 
 	v1 "k8s.io/api/core/v1"
@@ -36,12 +38,11 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/klog"
 
 	// Register gcp auth
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"k8s.io/client-go/rest"
 	restclient "k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
@@ -53,62 +54,56 @@ const (
 	retryPeriod   = 5 * time.Second
 )
 
-func buildConfig(opt *options.ServerOption) (*rest.Config, error) {
-	var cfg *rest.Config
-	var err error
-
-	master := opt.Master
-	kubeconfig := opt.Kubeconfig
-	if master != "" || kubeconfig != "" {
-		cfg, err = clientcmd.BuildConfigFromFlags(master, kubeconfig)
-	} else {
-		cfg, err = rest.InClusterConfig()
-	}
-	if err != nil {
-		return nil, err
-	}
-	cfg.QPS = opt.KubeAPIQPS
-	cfg.Burst = opt.KubeAPIBurst
-
-	return cfg, nil
-}
-
-// Run the kube-batch scheduler
+// Run the volcano scheduler.
 func Run(opt *options.ServerOption) error {
 	if opt.PrintVersion {
 		version.PrintVersionAndExit()
 	}
 
-	config, err := buildConfig(opt)
+	config, err := kube.BuildConfig(opt.KubeClientOptions)
 	if err != nil {
 		return err
+	}
+
+	if opt.PluginsDir != "" {
+		err := framework.LoadCustomPlugins(opt.PluginsDir)
+		if err != nil {
+			klog.Errorf("Fail to load custom plugins: %v", err)
+			return err
+		}
 	}
 
 	sched, err := scheduler.NewScheduler(config,
 		opt.SchedulerName,
 		opt.SchedulerConf,
 		opt.SchedulePeriod,
-		opt.DefaultQueue)
+		opt.DefaultQueue,
+		opt.NodeSelector)
 	if err != nil {
 		panic(err)
 	}
 
-	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		glog.Fatalf("Prometheus Http Server failed %s", http.ListenAndServe(opt.ListenAddress, nil))
-	}()
-
-	if err := helpers.StartHealthz(opt.HealthzBindAddress, "volcano-scheduler"); err != nil {
-		return err
+	if opt.EnableMetrics {
+		go func() {
+			http.Handle("/metrics", promhttp.Handler())
+			klog.Fatalf("Prometheus Http Server failed %s", http.ListenAndServe(opt.ListenAddress, nil))
+		}()
 	}
 
+	if opt.EnableHealthz {
+		if err := helpers.StartHealthz(opt.HealthzBindAddress, "volcano-scheduler"); err != nil {
+			return err
+		}
+	}
+
+	ctx := signals.SetupSignalContext()
 	run := func(ctx context.Context) {
 		sched.Run(ctx.Done())
 		<-ctx.Done()
 	}
 
 	if !opt.EnableLeaderElection {
-		run(context.TODO())
+		run(ctx)
 		return fmt.Errorf("finished without leader elect")
 	}
 
@@ -133,6 +128,7 @@ func Run(opt *options.ServerOption) error {
 		opt.LockObjectNamespace,
 		opt.SchedulerName,
 		leaderElectionClient.CoreV1(),
+		leaderElectionClient.CoordinationV1(),
 		resourcelock.ResourceLockConfig{
 			Identity:      id,
 			EventRecorder: eventRecorder,
@@ -141,7 +137,7 @@ func Run(opt *options.ServerOption) error {
 		return fmt.Errorf("couldn't create resource lock: %v", err)
 	}
 
-	leaderelection.RunOrDie(context.TODO(), leaderelection.LeaderElectionConfig{
+	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock:          rl,
 		LeaseDuration: leaseDuration,
 		RenewDeadline: renewDeadline,
@@ -149,7 +145,7 @@ func Run(opt *options.ServerOption) error {
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: run,
 			OnStoppedLeading: func() {
-				glog.Fatalf("leaderelection lost")
+				klog.Fatalf("leaderelection lost")
 			},
 		},
 	})

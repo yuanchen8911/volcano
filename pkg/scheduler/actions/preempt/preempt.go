@@ -17,34 +17,29 @@ limitations under the License.
 package preempt
 
 import (
-	"fmt"
+	"k8s.io/klog"
 
-	"github.com/golang/glog"
-
-	"volcano.sh/volcano/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/metrics"
 	"volcano.sh/volcano/pkg/scheduler/util"
 )
 
-type preemptAction struct {
-	ssn *framework.Session
+type Action struct{}
+
+func New() *Action {
+	return &Action{}
 }
 
-func New() *preemptAction {
-	return &preemptAction{}
-}
-
-func (alloc *preemptAction) Name() string {
+func (pmpt *Action) Name() string {
 	return "preempt"
 }
 
-func (alloc *preemptAction) Initialize() {}
+func (pmpt *Action) Initialize() {}
 
-func (alloc *preemptAction) Execute(ssn *framework.Session) {
-	glog.V(3).Infof("Enter Preempt ...")
-	defer glog.V(3).Infof("Leaving Preempt ...")
+func (pmpt *Action) Execute(ssn *framework.Session) {
+	klog.V(3).Infof("Enter Preempt ...")
+	defer klog.V(3).Infof("Leaving Preempt ...")
 
 	preemptorsMap := map[api.QueueID]*util.PriorityQueue{}
 	preemptorTasks := map[api.JobID]*util.PriorityQueue{}
@@ -53,23 +48,25 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 	queues := map[api.QueueID]*api.QueueInfo{}
 
 	for _, job := range ssn.Jobs {
-		if job.PodGroup.Status.Phase == scheduling.PodGroupPending {
+		if job.IsPending() {
 			continue
 		}
+
 		if vr := ssn.JobValid(job); vr != nil && !vr.Pass {
-			glog.V(4).Infof("Job <%s/%s> Queue <%s> skip preemption, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
+			klog.V(4).Infof("Job <%s/%s> Queue <%s> skip preemption, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
 			continue
 		}
 
 		if queue, found := ssn.Queues[job.Queue]; !found {
 			continue
 		} else if _, existed := queues[queue.UID]; !existed {
-			glog.V(3).Infof("Added Queue <%s> for Job <%s/%s>",
+			klog.V(3).Infof("Added Queue <%s> for Job <%s/%s>",
 				queue.Name, job.Namespace, job.Name)
 			queues[queue.UID] = queue
 		}
 
-		if len(job.TaskStatusIndex[api.Pending]) != 0 {
+		// check job if starting for more resources.
+		if ssn.JobStarving(job) {
 			if _, found := preemptorsMap[job.Queue]; !found {
 				preemptorsMap[job.Queue] = util.NewPriorityQueue(ssn.JobOrderFn)
 			}
@@ -82,6 +79,7 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 		}
 	}
 
+	ph := util.NewPredicateHelper()
 	// Preemption between Jobs within Queue.
 	for _, queue := range queues {
 		for {
@@ -89,49 +87,56 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 
 			// If no preemptors, no preemption.
 			if preemptors == nil || preemptors.Empty() {
-				glog.V(4).Infof("No preemptors in Queue <%s>, break.", queue.Name)
+				klog.V(4).Infof("No preemptors in Queue <%s>, break.", queue.Name)
 				break
 			}
 
 			preemptorJob := preemptors.Pop().(*api.JobInfo)
 
-			stmt := ssn.Statement()
+			stmt := framework.NewStatement(ssn)
 			assigned := false
 			for {
+				// If job is not request more resource, then stop preempting.
+				if !ssn.JobStarving(preemptorJob) {
+					break
+				}
+
 				// If not preemptor tasks, next job.
 				if preemptorTasks[preemptorJob.UID].Empty() {
-					glog.V(3).Infof("No preemptor task in job <%s/%s>.",
+					klog.V(3).Infof("No preemptor task in job <%s/%s>.",
 						preemptorJob.Namespace, preemptorJob.Name)
 					break
 				}
 
 				preemptor := preemptorTasks[preemptorJob.UID].Pop().(*api.TaskInfo)
 
-				if preempted, _ := preempt(ssn, stmt, preemptor, ssn.Nodes, func(task *api.TaskInfo) bool {
+				if preempted, _ := preempt(ssn, stmt, preemptor, func(task *api.TaskInfo) bool {
 					// Ignore non running task.
 					if task.Status != api.Running {
 						return false
 					}
-
+					// Ignore task with empty resource request.
+					if task.Resreq.IsEmpty() {
+						return false
+					}
+					if !task.Preemptable {
+						return false
+					}
 					job, found := ssn.Jobs[task.Job]
 					if !found {
 						return false
 					}
 					// Preempt other jobs within queue
 					return job.Queue == preemptorJob.Queue && preemptor.Job != task.Job
-				}); preempted {
+				}, ph); preempted {
 					assigned = true
-				}
-
-				// If job is not pipelined, keep preempting
-				if ssn.JobPipelined(preemptorJob) {
-					stmt.Commit()
-					break
 				}
 			}
 
-			// If job is not pipelined after try all tasks, next job.
-			if !ssn.JobPipelined(preemptorJob) {
+			// Commit changes only if job is pipelined, otherwise try next job.
+			if ssn.JobPipelined(preemptorJob) {
+				stmt.Commit()
+			} else {
 				stmt.Discard()
 				continue
 			}
@@ -143,6 +148,11 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 
 		// Preemption between Task within Job.
 		for _, job := range underRequest {
+			// Fix: preemptor numbers lose when in same job
+			preemptorTasks[job.UID] = util.NewPriorityQueue(ssn.TaskOrderFn)
+			for _, task := range job.TaskStatusIndex[api.Pending] {
+				preemptorTasks[job.UID].Push(task)
+			}
 			for {
 				if _, found := preemptorTasks[job.UID]; !found {
 					break
@@ -154,16 +164,19 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 
 				preemptor := preemptorTasks[job.UID].Pop().(*api.TaskInfo)
 
-				stmt := ssn.Statement()
-				assigned, _ := preempt(ssn, stmt, preemptor, ssn.Nodes, func(task *api.TaskInfo) bool {
+				stmt := framework.NewStatement(ssn)
+				assigned, _ := preempt(ssn, stmt, preemptor, func(task *api.TaskInfo) bool {
 					// Ignore non running task.
 					if task.Status != api.Running {
 						return false
 					}
-
+					// Ignore task with empty resource request.
+					if task.Resreq.IsEmpty() {
+						return false
+					}
 					// Preempt tasks within job.
 					return preemptor.Job == task.Job
-				})
+				}, ph)
 				stmt.Commit()
 
 				// If no preemption, next job.
@@ -173,34 +186,34 @@ func (alloc *preemptAction) Execute(ssn *framework.Session) {
 			}
 		}
 	}
+
+	// call victimTasksFn to evict tasks
+	victimTasks(ssn)
 }
 
-func (alloc *preemptAction) UnInitialize() {}
+func (pmpt *Action) UnInitialize() {}
 
 func preempt(
 	ssn *framework.Session,
 	stmt *framework.Statement,
 	preemptor *api.TaskInfo,
-	nodes map[string]*api.NodeInfo,
 	filter func(*api.TaskInfo) bool,
+	predicateHelper util.PredicateHelper,
 ) (bool, error) {
 	assigned := false
 
-	allNodes := util.GetNodeList(nodes)
+	allNodes := ssn.NodeList
 
-	predicateNodes, _ := util.PredicateNodes(preemptor, allNodes, ssn.PredicateFn)
+	predicateNodes, _ := predicateHelper.PredicateNodes(preemptor, allNodes, ssn.PredicateFn)
 
 	nodeScores := util.PrioritizeNodes(preemptor, predicateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
 
 	selectedNodes := util.SortNodes(nodeScores)
 	for _, node := range selectedNodes {
-		glog.V(3).Infof("Considering Task <%s/%s> on Node <%s>.",
+		klog.V(3).Infof("Considering Task <%s/%s> on Node <%s>.",
 			preemptor.Namespace, preemptor.Name, node.Name)
 
 		var preemptees []*api.TaskInfo
-		preempted := api.EmptyResource()
-		resreq := preemptor.InitResreq.Clone()
-
 		for _, task := range node.Tasks {
 			if filter == nil {
 				preemptees = append(preemptees, task.Clone())
@@ -211,8 +224,8 @@ func preempt(
 		victims := ssn.Preemptable(preemptor, preemptees)
 		metrics.UpdatePreemptionVictimsCount(len(victims))
 
-		if err := validateVictims(victims, resreq); err != nil {
-			glog.V(3).Infof("No validated victims on Node <%s>: %v", node.Name, err)
+		if err := util.ValidateVictims(preemptor, node, victims); err != nil {
+			klog.V(3).Infof("No validated victims on Node <%s>: %v", node.Name, err)
 			continue
 		}
 
@@ -223,29 +236,31 @@ func preempt(
 			victimsQueue.Push(victim)
 		}
 		// Preempt victims for tasks, pick lowest priority task first.
+		preempted := api.EmptyResource()
+
 		for !victimsQueue.Empty() {
+			// If reclaimed enough resources, break loop to avoid Sub panic.
+			if preemptor.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {
+				break
+			}
 			preemptee := victimsQueue.Pop().(*api.TaskInfo)
-			glog.Errorf("Try to preempt Task <%s/%s> for Tasks <%s/%s>",
+			klog.V(3).Infof("Try to preempt Task <%s/%s> for Task <%s/%s>",
 				preemptee.Namespace, preemptee.Name, preemptor.Namespace, preemptor.Name)
 			if err := stmt.Evict(preemptee, "preempt"); err != nil {
-				glog.Errorf("Failed to preempt Task <%s/%s> for Tasks <%s/%s>: %v",
+				klog.Errorf("Failed to preempt Task <%s/%s> for Task <%s/%s>: %v",
 					preemptee.Namespace, preemptee.Name, preemptor.Namespace, preemptor.Name, err)
 				continue
 			}
 			preempted.Add(preemptee.Resreq)
-			// If reclaimed enough resources, break loop to avoid Sub panic.
-			if resreq.LessEqual(preempted) {
-				break
-			}
 		}
 
 		metrics.RegisterPreemptionAttempts()
-		glog.V(3).Infof("Preempted <%v> for task <%s/%s> requested <%v>.",
+		klog.V(3).Infof("Preempted <%v> for Task <%s/%s> requested <%v>.",
 			preempted, preemptor.Namespace, preemptor.Name, preemptor.InitResreq)
 
-		if preemptor.InitResreq.LessEqual(preempted) {
+		if preemptor.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {
 			if err := stmt.Pipeline(preemptor, node.Name); err != nil {
-				glog.Errorf("Failed to pipline Task <%s/%s> on Node <%s>",
+				klog.Errorf("Failed to pipeline Task <%s/%s> on Node <%s>",
 					preemptor.Namespace, preemptor.Name, node.Name)
 			}
 
@@ -259,19 +274,20 @@ func preempt(
 	return assigned, nil
 }
 
-func validateVictims(victims []*api.TaskInfo, resreq *api.Resource) error {
-	if len(victims) == 0 {
-		return fmt.Errorf("no victims")
+func victimTasks(ssn *framework.Session) {
+	stmt := framework.NewStatement(ssn)
+	tasks := make([]*api.TaskInfo, 0)
+	victimTasksMap := ssn.VictimTasks(tasks)
+	victimTasks := make([]*api.TaskInfo, 0)
+	for task := range victimTasksMap {
+		victimTasks = append(victimTasks, task)
 	}
-
-	// If not enough resource, continue
-	allRes := api.EmptyResource()
-	for _, v := range victims {
-		allRes.Add(v.Resreq)
+	for _, victim := range victimTasks {
+		if err := stmt.Evict(victim.Clone(), "evict"); err != nil {
+			klog.Errorf("Failed to evict Task <%s/%s>: %v",
+				victim.Namespace, victim.Name, err)
+			continue
+		}
 	}
-	if allRes.Less(resreq) {
-		return fmt.Errorf("not enough resources")
-	}
-
-	return nil
+	stmt.Commit()
 }

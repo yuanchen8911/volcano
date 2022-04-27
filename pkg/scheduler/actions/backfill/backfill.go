@@ -17,38 +17,37 @@ limitations under the License.
 package backfill
 
 import (
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
-	"volcano.sh/volcano/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
+	"volcano.sh/volcano/pkg/scheduler/metrics"
 )
 
-type backfillAction struct {
-	ssn *framework.Session
+type Action struct{}
+
+func New() *Action {
+	return &Action{}
 }
 
-func New() *backfillAction {
-	return &backfillAction{}
-}
-
-func (alloc *backfillAction) Name() string {
+func (backfill *Action) Name() string {
 	return "backfill"
 }
 
-func (alloc *backfillAction) Initialize() {}
+func (backfill *Action) Initialize() {}
 
-func (alloc *backfillAction) Execute(ssn *framework.Session) {
-	glog.V(3).Infof("Enter Backfill ...")
-	defer glog.V(3).Infof("Leaving Backfill ...")
+func (backfill *Action) Execute(ssn *framework.Session) {
+	klog.V(3).Infof("Enter Backfill ...")
+	defer klog.V(3).Infof("Leaving Backfill ...")
 
 	// TODO (k82cn): When backfill, it's also need to balance between Queues.
 	for _, job := range ssn.Jobs {
-		if job.PodGroup.Status.Phase == scheduling.PodGroupPending {
+		if job.IsPending() {
 			continue
 		}
+
 		if vr := ssn.JobValid(job); vr != nil && !vr.Pass {
-			glog.V(4).Infof("Job <%s/%s> Queue <%s> skip backfill, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
+			klog.V(4).Infof("Job <%s/%s> Queue <%s> skip backfill, reason: %v, message %v", job.Namespace, job.Name, job.Queue, vr.Reason, vr.Message)
 			continue
 		}
 
@@ -63,19 +62,20 @@ func (alloc *backfillAction) Execute(ssn *framework.Session) {
 					// TODO (k82cn): predicates did not consider pod number for now, there'll
 					// be ping-pong case here.
 					if err := ssn.PredicateFn(task, node); err != nil {
-						glog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s>: %v",
+						klog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s>: %v",
 							task.Namespace, task.Name, node.Name, err)
 						fe.SetNodeError(node.Name, err)
 						continue
 					}
 
-					glog.V(3).Infof("Binding Task <%v/%v> to node <%v>", task.Namespace, task.Name, node.Name)
-					if err := ssn.Allocate(task, node.Name); err != nil {
-						glog.Errorf("Failed to bind Task %v on %v in Session %v", task.UID, node.Name, ssn.UID)
+					klog.V(3).Infof("Binding Task <%v/%v> to node <%v>", task.Namespace, task.Name, node.Name)
+					if err := ssn.Allocate(task, node); err != nil {
+						klog.Errorf("Failed to bind Task %v on %v in Session %v", task.UID, node.Name, ssn.UID)
 						fe.SetNodeError(node.Name, err)
 						continue
 					}
 
+					metrics.UpdateE2eSchedulingDurationByJob(job.Name, string(job.Queue), job.Namespace, metrics.Duration(job.CreationTimestamp.Time))
 					allocated = true
 					break
 				}
@@ -83,11 +83,10 @@ func (alloc *backfillAction) Execute(ssn *framework.Session) {
 				if !allocated {
 					job.NodesFitErrors[task.UID] = fe
 				}
-			} else {
-				// TODO (k82cn): backfill for other case.
 			}
+			// TODO (k82cn): backfill for other case.
 		}
 	}
 }
 
-func (alloc *backfillAction) UnInitialize() {}
+func (backfill *Action) UnInitialize() {}

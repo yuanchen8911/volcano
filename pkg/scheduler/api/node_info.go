@@ -1,28 +1,38 @@
 /*
-Copyright 2017 The Kubernetes Authors.
+ Copyright 2021 The Volcano Authors.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
 */
 
 package api
 
 import (
 	"fmt"
-
-	"github.com/golang/glog"
+	"strconv"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/klog"
+
+	"volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
+
+type AllocateFailError struct {
+	Reason string
+}
+
+func (o *AllocateFailError) Error() string {
+	return o.Reason
+}
 
 // NodeInfo is node level aggregated information.
 type NodeInfo struct {
@@ -34,19 +44,47 @@ type NodeInfo struct {
 
 	// The releasing resource on that node
 	Releasing *Resource
+	// The pipelined resource on that node
+	Pipelined *Resource
 	// The idle resource on that node
 	Idle *Resource
 	// The used resource on that node, including running and terminating
 	// pods
 	Used *Resource
 
-	Allocatable *Resource
-	Capability  *Resource
+	Allocatable   *Resource
+	Capability    *Resource
+	ResourceUsage *NodeUsage
 
-	Tasks map[TaskID]*TaskInfo
+	Tasks             map[TaskID]*TaskInfo
+	NumaInfo          *NumatopoInfo
+	NumaChgFlag       NumaChgFlag
+	NumaSchedulerInfo *NumatopoInfo
+	RevocableZone     string
 
 	// Used to store custom information
-	Others map[string]interface{}
+	Others     map[string]interface{}
+	GPUDevices map[int]*GPUDevice
+
+	// enable node resource oversubscription
+	OversubscriptionNode bool
+	// OfflineJobEvicting true means node resource usage too high then dispatched pod can not use oversubscription resource
+	OfflineJobEvicting bool
+
+	// Resource Oversubscription feature: the Oversubscription Resource reported in annotation
+	OversubscriptionResource *Resource
+}
+
+// FutureIdle returns resources that will be idle in the future:
+//
+// That is current idle resources plus released resources minus pipelined resources.
+func (ni *NodeInfo) FutureIdle() *Resource {
+	return ni.Idle.Clone().Add(ni.Releasing).Sub(ni.Pipelined)
+}
+
+// GetNodeAllocatable return node Allocatable without OversubscriptionResource resource
+func (ni *NodeInfo) GetNodeAllocatable() *Resource {
+	return NewResource(ni.Node.Status.Allocatable)
 }
 
 // NodeState defines the current state of node.
@@ -55,40 +93,83 @@ type NodeState struct {
 	Reason string
 }
 
+// NodeUsage defines the real load usage of node
+type NodeUsage struct {
+	CPUUsageAvg map[string]float64
+	MEMUsageAvg map[string]float64
+}
+
+func (nu *NodeUsage) DeepCopy() *NodeUsage {
+	newUsage := &NodeUsage{
+		CPUUsageAvg: make(map[string]float64),
+		MEMUsageAvg: make(map[string]float64),
+	}
+	for k, v := range nu.CPUUsageAvg {
+		newUsage.CPUUsageAvg[k] = v
+	}
+	for k, v := range nu.MEMUsageAvg {
+		newUsage.MEMUsageAvg[k] = v
+	}
+	return newUsage
+}
+
 // NewNodeInfo is used to create new nodeInfo object
 func NewNodeInfo(node *v1.Node) *NodeInfo {
-	var ni *NodeInfo
+	nodeInfo := &NodeInfo{
+		Releasing: EmptyResource(),
+		Pipelined: EmptyResource(),
+		Idle:      EmptyResource(),
+		Used:      EmptyResource(),
 
-	if node == nil {
-		ni = &NodeInfo{
-			Releasing: EmptyResource(),
-			Idle:      EmptyResource(),
-			Used:      EmptyResource(),
+		Allocatable:   EmptyResource(),
+		Capability:    EmptyResource(),
+		ResourceUsage: &NodeUsage{},
 
-			Allocatable: EmptyResource(),
-			Capability:  EmptyResource(),
+		OversubscriptionResource: EmptyResource(),
+		Tasks:                    make(map[TaskID]*TaskInfo),
 
-			Tasks: make(map[TaskID]*TaskInfo),
-		}
-	} else {
-		ni = &NodeInfo{
-			Name: node.Name,
-			Node: node,
+		GPUDevices: make(map[int]*GPUDevice),
+	}
 
-			Releasing: EmptyResource(),
-			Idle:      NewResource(node.Status.Allocatable),
-			Used:      EmptyResource(),
+	nodeInfo.setOversubscription(node)
 
-			Allocatable: NewResource(node.Status.Allocatable),
-			Capability:  NewResource(node.Status.Capacity),
+	if node != nil {
+		nodeInfo.Name = node.Name
+		nodeInfo.Node = node
+		nodeInfo.Idle = NewResource(node.Status.Allocatable).Add(nodeInfo.OversubscriptionResource)
+		nodeInfo.Allocatable = NewResource(node.Status.Allocatable).Add(nodeInfo.OversubscriptionResource)
+		nodeInfo.Capability = NewResource(node.Status.Capacity).Add(nodeInfo.OversubscriptionResource)
+	}
+	nodeInfo.setNodeGPUInfo(node)
+	nodeInfo.setNodeState(node)
+	nodeInfo.setRevocableZone(node)
 
-			Tasks: make(map[TaskID]*TaskInfo),
+	return nodeInfo
+}
+
+// RefreshNumaSchedulerInfoByCrd used to update scheduler numa information based the CRD numatopo
+func (ni *NodeInfo) RefreshNumaSchedulerInfoByCrd() {
+	if ni.NumaInfo == nil {
+		ni.NumaSchedulerInfo = nil
+		return
+	}
+
+	tmp := ni.NumaInfo.DeepCopy()
+	if ni.NumaChgFlag == NumaInfoMoreFlag {
+		ni.NumaSchedulerInfo = tmp
+	} else if ni.NumaChgFlag == NumaInfoLessFlag {
+		numaResMap := ni.NumaSchedulerInfo.NumaResMap
+		for resName, resInfo := range tmp.NumaResMap {
+			klog.V(5).Infof("resource %s Allocatable : current %v new %v on node %s",
+				resName, numaResMap[resName], resInfo, ni.Name)
+			if numaResMap[resName].Allocatable.Size() >= resInfo.Allocatable.Size() {
+				numaResMap[resName].Allocatable = resInfo.Allocatable.Clone()
+				numaResMap[resName].Capacity = resInfo.Capacity
+			}
 		}
 	}
 
-	ni.setNodeState(node)
-
-	return ni
+	ni.NumaChgFlag = NumaInfoResetFlag
 }
 
 // Clone used to clone nodeInfo Object
@@ -98,6 +179,23 @@ func (ni *NodeInfo) Clone() *NodeInfo {
 	for _, p := range ni.Tasks {
 		res.AddTask(p)
 	}
+	if ni.NumaInfo != nil {
+		res.NumaInfo = ni.NumaInfo.DeepCopy()
+	}
+	if ni.ResourceUsage != nil {
+		res.ResourceUsage = ni.ResourceUsage.DeepCopy()
+	}
+
+	if ni.NumaSchedulerInfo != nil {
+		res.NumaSchedulerInfo = ni.NumaSchedulerInfo.DeepCopy()
+		klog.V(5).Infof("node[%s]", ni.Name)
+		for resName, resInfo := range res.NumaSchedulerInfo.NumaResMap {
+			klog.V(5).Infof("current resource %s : %v", resName, resInfo)
+		}
+
+		klog.V(5).Infof("current Policies : %v", res.NumaSchedulerInfo.Policies)
+	}
+
 	res.Others = ni.Others
 	return res
 }
@@ -105,6 +203,63 @@ func (ni *NodeInfo) Clone() *NodeInfo {
 // Ready returns whether node is ready for scheduling
 func (ni *NodeInfo) Ready() bool {
 	return ni.State.Phase == Ready
+}
+
+func (ni *NodeInfo) setRevocableZone(node *v1.Node) {
+	if node == nil {
+		klog.Warningf("the argument node is null.")
+		return
+	}
+
+	revocableZone := ""
+	if len(node.Labels) > 0 {
+		if value, found := node.Labels[v1beta1.RevocableZone]; found {
+			revocableZone = value
+		}
+	}
+	ni.RevocableZone = revocableZone
+}
+
+// Check node if enable Oversubscription and set Oversubscription resources
+// Only support oversubscription cpu and memory resource for this version
+func (ni *NodeInfo) setOversubscription(node *v1.Node) {
+	if node == nil {
+		return
+	}
+
+	ni.OversubscriptionNode = false
+	ni.OfflineJobEvicting = false
+	if len(node.Labels) > 0 {
+		if value, found := node.Labels[OversubscriptionNode]; found {
+			b, err := strconv.ParseBool(value)
+			if err == nil {
+				ni.OversubscriptionNode = b
+			} else {
+				ni.OversubscriptionNode = false
+			}
+			klog.V(5).Infof("Set node %s Oversubscription to %v", node.Name, ni.OversubscriptionNode)
+		}
+	}
+
+	if len(node.Annotations) > 0 {
+		if value, found := node.Annotations[OfflineJobEvicting]; found {
+			b, err := strconv.ParseBool(value)
+			if err == nil {
+				ni.OfflineJobEvicting = b
+			} else {
+				ni.OfflineJobEvicting = false
+			}
+			klog.V(5).Infof("Set node %s OfflineJobEvicting to %v", node.Name, ni.OfflineJobEvicting)
+		}
+		if value, found := node.Annotations[OversubscriptionCPU]; found {
+			ni.OversubscriptionResource.MilliCPU, _ = strconv.ParseFloat(value, 64)
+			klog.V(5).Infof("Set node %s Oversubscription CPU to %v", node.Name, ni.OversubscriptionResource.MilliCPU)
+		}
+		if value, found := node.Annotations[OversubscriptionMemory]; found {
+			ni.OversubscriptionResource.Memory, _ = strconv.ParseFloat(value, 64)
+			klog.V(5).Infof("Set node %s Oversubscription Memory to %v", node.Name, ni.OversubscriptionResource.Memory)
+		}
+	}
 }
 
 func (ni *NodeInfo) setNodeState(node *v1.Node) {
@@ -118,7 +273,7 @@ func (ni *NodeInfo) setNodeState(node *v1.Node) {
 	}
 
 	// set NodeState according to resources
-	if !ni.Used.LessEqual(NewResource(node.Status.Allocatable)) {
+	if !ni.Used.LessEqual(ni.Allocatable, Zero) {
 		ni.State = NodeState{
 			Phase:  NotReady,
 			Reason: "OutOfSync",
@@ -126,55 +281,131 @@ func (ni *NodeInfo) setNodeState(node *v1.Node) {
 		return
 	}
 
+	// If node not ready, e.g. power off
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == v1.NodeReady && cond.Status != v1.ConditionTrue {
+			ni.State = NodeState{
+				Phase:  NotReady,
+				Reason: "NotReady",
+			}
+			klog.Warningf("set the node %s status to %s.", node.Name, NotReady.String())
+			return
+		}
+	}
+
 	// Node is ready (ignore node conditions because of taint/toleration)
 	ni.State = NodeState{
 		Phase:  Ready,
 		Reason: "",
+	}
+
+	klog.V(4).Infof("set the node %s status to %s.", node.Name, Ready.String())
+}
+
+func (ni *NodeInfo) setNodeGPUInfo(node *v1.Node) {
+	if node == nil {
+		return
+	}
+	memory, ok := node.Status.Capacity[VolcanoGPUResource]
+	if !ok {
+		return
+	}
+	totalMemory := memory.Value()
+
+	res, ok := node.Status.Capacity[VolcanoGPUNumber]
+	if !ok {
+		return
+	}
+	gpuNumber := res.Value()
+	if gpuNumber == 0 {
+		klog.Warningf("invalid %s=%s", VolcanoGPUNumber, res.String())
+		return
+	}
+
+	memoryPerCard := uint(totalMemory / gpuNumber)
+	for i := 0; i < int(gpuNumber); i++ {
+		ni.GPUDevices[i] = NewGPUDevice(i, memoryPerCard)
 	}
 }
 
 // SetNode sets kubernetes node object to nodeInfo object
 func (ni *NodeInfo) SetNode(node *v1.Node) {
 	ni.setNodeState(node)
-
 	if !ni.Ready() {
-		glog.Warningf("Failed to set node info, phase: %s, reason: %s",
-			ni.State.Phase, ni.State.Reason)
+		klog.Warningf("Failed to set node info for %s, phase: %s, reason: %s",
+			ni.Name, ni.State.Phase, ni.State.Reason)
 		return
 	}
+
+	// Dry run, make sure all fields other than `State` are in the original state.
+	copy := ni.Clone()
+	copy.setNode(node)
+	copy.setNodeState(node)
+	if !copy.Ready() {
+		klog.Warningf("SetNode makes node %s not ready, phase: %s, reason: %s",
+			copy.Name, copy.State.Phase, copy.State.Reason)
+		// Set state of node to !Ready, left other fields untouched
+		ni.State = copy.State
+		return
+	}
+
+	ni.setNode(node)
+}
+
+// setNode sets kubernetes node object to nodeInfo object without assertion
+func (ni *NodeInfo) setNode(node *v1.Node) {
+	ni.setOversubscription(node)
+	ni.setNodeGPUInfo(node)
+	ni.setRevocableZone(node)
 
 	ni.Name = node.Name
 	ni.Node = node
 
-	ni.Allocatable = NewResource(node.Status.Allocatable)
-	ni.Capability = NewResource(node.Status.Capacity)
-	ni.Idle = NewResource(node.Status.Allocatable)
+	ni.Allocatable = NewResource(node.Status.Allocatable).Add(ni.OversubscriptionResource)
+	ni.Capability = NewResource(node.Status.Capacity).Add(ni.OversubscriptionResource)
+	ni.Releasing = EmptyResource()
+	ni.Pipelined = EmptyResource()
+	ni.Idle = NewResource(node.Status.Allocatable).Add(ni.OversubscriptionResource)
 	ni.Used = EmptyResource()
 
-	for _, task := range ni.Tasks {
-		if task.Status == Releasing {
-			ni.Releasing.Add(task.Resreq)
+	for _, ti := range ni.Tasks {
+		switch ti.Status {
+		case Releasing:
+			ni.Idle.sub(ti.Resreq) // sub without assertion
+			ni.Releasing.Add(ti.Resreq)
+			ni.Used.Add(ti.Resreq)
+			ni.AddGPUResource(ti.Pod)
+		case Pipelined:
+			ni.Pipelined.Add(ti.Resreq)
+		default:
+			ni.Idle.sub(ti.Resreq) // sub without assertion
+			ni.Used.Add(ti.Resreq)
+			ni.AddGPUResource(ti.Pod)
 		}
-
-		ni.Idle.Sub(task.Resreq)
-		ni.Used.Add(task.Resreq)
 	}
 }
 
 func (ni *NodeInfo) allocateIdleResource(ti *TaskInfo) error {
-	if ti.Resreq.LessEqual(ni.Idle) {
+	if ti.Resreq.LessEqual(ni.Idle, Zero) {
 		ni.Idle.Sub(ti.Resreq)
 		return nil
 	}
-	ni.State = NodeState{
-		Phase:  NotReady,
-		Reason: "OutOfSync",
-	}
-	return fmt.Errorf("Selected node NotReady")
+
+	return &AllocateFailError{Reason: fmt.Sprintf(
+		"cannot allocate resource, <%s> idle: %s <%s/%s> req: %s",
+		ni.Name, ni.Idle.String(), ti.Namespace, ti.Name, ti.Resreq.String(),
+	)}
 }
 
 // AddTask is used to add a task in nodeInfo object
+//
+// If error occurs both task and node are guaranteed to be in the original state.
 func (ni *NodeInfo) AddTask(task *TaskInfo) error {
+	if len(task.NodeName) > 0 && len(ni.Name) > 0 && task.NodeName != ni.Name {
+		return fmt.Errorf("task <%v/%v> already on different node <%v>",
+			task.Namespace, task.Name, task.NodeName)
+	}
+
 	key := PodKey(task.Pod)
 	if _, found := ni.Tasks[key]; found {
 		return fmt.Errorf("task <%v/%v> already on node <%v>",
@@ -192,30 +423,42 @@ func (ni *NodeInfo) AddTask(task *TaskInfo) error {
 				return err
 			}
 			ni.Releasing.Add(ti.Resreq)
+			ni.Used.Add(ti.Resreq)
+			ni.AddGPUResource(ti.Pod)
 		case Pipelined:
-			ni.Releasing.Sub(ti.Resreq)
+			ni.Pipelined.Add(ti.Resreq)
 		default:
 			if err := ni.allocateIdleResource(ti); err != nil {
 				return err
 			}
+			ni.Used.Add(ti.Resreq)
+			ni.AddGPUResource(ti.Pod)
 		}
-
-		ni.Used.Add(ti.Resreq)
 	}
 
+	if ni.NumaInfo != nil {
+		ni.NumaInfo.AddTask(ti)
+	}
+
+	// Update task node name upon successful task addition.
+	task.NodeName = ni.Name
+	ti.NodeName = ni.Name
 	ni.Tasks[key] = ti
 
 	return nil
 }
 
-// RemoveTask used to remove a task from nodeInfo object
+// RemoveTask used to remove a task from nodeInfo object.
+//
+// If error occurs both task and node are guaranteed to be in the original state.
 func (ni *NodeInfo) RemoveTask(ti *TaskInfo) error {
 	key := PodKey(ti.Pod)
 
 	task, found := ni.Tasks[key]
 	if !found {
-		return fmt.Errorf("failed to find task <%v/%v> on host <%v>",
+		klog.Warningf("failed to find task <%v/%v> on host <%v>",
 			ti.Namespace, ti.Name, ni.Name)
+		return nil
 	}
 
 	if ni.Node != nil {
@@ -223,13 +466,19 @@ func (ni *NodeInfo) RemoveTask(ti *TaskInfo) error {
 		case Releasing:
 			ni.Releasing.Sub(task.Resreq)
 			ni.Idle.Add(task.Resreq)
+			ni.Used.Sub(task.Resreq)
+			ni.SubGPUResource(ti.Pod)
 		case Pipelined:
-			ni.Releasing.Add(task.Resreq)
+			ni.Pipelined.Sub(task.Resreq)
 		default:
 			ni.Idle.Add(task.Resreq)
+			ni.Used.Sub(task.Resreq)
+			ni.SubGPUResource(ti.Pod)
 		}
+	}
 
-		ni.Used.Sub(task.Resreq)
+	if ni.NumaInfo != nil {
+		ni.NumaInfo.RemoveTask(ti)
 	}
 
 	delete(ni.Tasks, key)
@@ -237,13 +486,21 @@ func (ni *NodeInfo) RemoveTask(ti *TaskInfo) error {
 	return nil
 }
 
-// UpdateTask is used to update a task in nodeInfo object
+// UpdateTask is used to update a task in nodeInfo object.
+//
+// If error occurs both task and node are guaranteed to be in the original state.
 func (ni *NodeInfo) UpdateTask(ti *TaskInfo) error {
 	if err := ni.RemoveTask(ti); err != nil {
 		return err
 	}
 
-	return ni.AddTask(ti)
+	if err := ni.AddTask(ti); err != nil {
+		// This should never happen if task removal was successful,
+		// because only possible error during task addition is when task is still on a node.
+		klog.Fatalf("Failed to add Task <%s,%s> to Node <%s> during task update",
+			ti.Namespace, ti.Name, ni.Name)
+	}
+	return nil
 }
 
 // String returns nodeInfo details in string format
@@ -252,13 +509,13 @@ func (ni NodeInfo) String() string {
 
 	i := 0
 	for _, task := range ni.Tasks {
-		tasks = tasks + fmt.Sprintf("\n\t %d: %v", i, task)
+		tasks += fmt.Sprintf("\n\t %d: %v", i, task)
 		i++
 	}
 
-	return fmt.Sprintf("Node (%s): idle <%v>, used <%v>, releasing <%v>, state <phase %s, reaseon %s>, taints <%v>%s",
-		ni.Name, ni.Idle, ni.Used, ni.Releasing, ni.State.Phase, ni.State.Reason, ni.Node.Spec.Taints, tasks)
-
+	return fmt.Sprintf("Node (%s): allocatable<%v> idle <%v>, used <%v>, releasing <%v>, oversubscribution <%v>, "+
+		"state <phase %s, reaseon %s>, oversubscributionNode <%v>, offlineJobEvicting <%v>,taints <%v>%s",
+		ni.Name, ni.Allocatable, ni.Idle, ni.Used, ni.Releasing, ni.OversubscriptionResource, ni.State.Phase, ni.State.Reason, ni.OversubscriptionNode, ni.OfflineJobEvicting, ni.Node.Spec.Taints, tasks)
 }
 
 // Pods returns all pods running in that node
@@ -268,4 +525,57 @@ func (ni *NodeInfo) Pods() (pods []*v1.Pod) {
 	}
 
 	return
+}
+
+// GetDevicesIdleGPUMemory returns all the idle GPU memory by gpu card.
+func (ni *NodeInfo) GetDevicesIdleGPUMemory() map[int]uint {
+	devicesAllGPUMemory := ni.getDevicesAllGPUMemory()
+	devicesUsedGPUMemory := ni.getDevicesUsedGPUMemory()
+	res := map[int]uint{}
+	for id, allMemory := range devicesAllGPUMemory {
+		if usedMemory, found := devicesUsedGPUMemory[id]; found {
+			res[id] = allMemory - usedMemory
+		} else {
+			res[id] = allMemory
+		}
+	}
+	return res
+}
+
+func (ni *NodeInfo) getDevicesUsedGPUMemory() map[int]uint {
+	res := map[int]uint{}
+	for _, device := range ni.GPUDevices {
+		res[device.ID] = device.getUsedGPUMemory()
+	}
+	return res
+}
+
+func (ni *NodeInfo) getDevicesAllGPUMemory() map[int]uint {
+	res := map[int]uint{}
+	for _, device := range ni.GPUDevices {
+		res[device.ID] = device.Memory
+	}
+	return res
+}
+
+// AddGPUResource adds the pod to GPU pool if it is assigned
+func (ni *NodeInfo) AddGPUResource(pod *v1.Pod) {
+	gpuRes := GetGPUResourceOfPod(pod)
+	if gpuRes > 0 {
+		id := GetGPUIndex(pod)
+		if dev := ni.GPUDevices[id]; dev != nil {
+			dev.PodMap[string(pod.UID)] = pod
+		}
+	}
+}
+
+// SubGPUResource frees the gpu hold by the pod
+func (ni *NodeInfo) SubGPUResource(pod *v1.Pod) {
+	gpuRes := GetGPUResourceOfPod(pod)
+	if gpuRes > 0 {
+		id := GetGPUIndex(pod)
+		if dev := ni.GPUDevices[id]; dev != nil {
+			delete(dev.PodMap, string(pod.UID))
+		}
+	}
 }

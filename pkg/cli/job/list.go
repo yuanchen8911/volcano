@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vulcan Authors.
+Copyright 2018 The Volcano Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -26,8 +27,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
-	"volcano.sh/volcano/pkg/client/clientset/versioned"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
+	"volcano.sh/apis/pkg/client/clientset/versioned"
+	"volcano.sh/volcano/pkg/cli/util"
 )
 
 type listFlags struct {
@@ -77,7 +79,7 @@ const (
 
 var listJobFlags = &listFlags{}
 
-// InitListFlags init list command flags
+// InitListFlags init list command flags.
 func InitListFlags(cmd *cobra.Command) {
 	initFlags(cmd, &listJobFlags.commonFlags)
 
@@ -87,9 +89,9 @@ func InitListFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&listJobFlags.selector, "selector", "", "", "fuzzy matching jobName")
 }
 
-// ListJobs  lists all jobs details
+// ListJobs lists all jobs details.
 func ListJobs() error {
-	config, err := buildConfig(listJobFlags.Master, listJobFlags.Kubeconfig)
+	config, err := util.BuildConfig(listJobFlags.Master, listJobFlags.Kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -97,7 +99,7 @@ func ListJobs() error {
 		listJobFlags.Namespace = ""
 	}
 	jobClient := versioned.NewForConfigOrDie(config)
-	jobs, err := jobClient.BatchV1alpha1().Jobs(listJobFlags.Namespace).List(metav1.ListOptions{})
+	jobs, err := jobClient.BatchV1alpha1().Jobs(listJobFlags.Namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -111,12 +113,12 @@ func ListJobs() error {
 	return nil
 }
 
-// PrintJobs prints all jobs details
+// PrintJobs prints all jobs details.
 func PrintJobs(jobs *v1alpha1.JobList, writer io.Writer) {
 	maxLenInfo := getMaxLen(jobs)
 
-	titleFormat := "%%-%ds%%-25s%%-12s%%-12s%%-12s%%-6s%%-10s%%-10s%%-12s%%-10s%%-12s%%-10s\n"
-	contentFormat := "%%-%ds%%-25s%%-12s%%-12s%%-12d%%-6d%%-10d%%-10d%%-12d%%-10d%%-12d%%-10d\n"
+	titleFormat := "%%-%ds%%-15s%%-12s%%-12s%%-12s%%-6s%%-10s%%-10s%%-12s%%-10s%%-12s%%-10s\n"
+	contentFormat := "%%-%ds%%-15s%%-12s%%-12s%%-12d%%-6d%%-10d%%-10d%%-12d%%-10d%%-12d%%-10d\n"
 
 	var err error
 	if listJobFlags.allNamespace {
@@ -148,11 +150,11 @@ func PrintJobs(jobs *v1alpha1.JobList, writer io.Writer) {
 
 		if listJobFlags.allNamespace {
 			_, err = fmt.Fprintf(writer, fmt.Sprintf("%%-%ds"+contentFormat, maxLenInfo[1], maxLenInfo[0]),
-				job.Namespace, job.Name, job.CreationTimestamp.Format("2006-01-02 15:04:05"), job.Status.State.Phase, jobType, replicas,
+				job.Namespace, job.Name, job.CreationTimestamp.Format("2006-01-02"), job.Status.State.Phase, jobType, replicas,
 				job.Status.MinAvailable, job.Status.Pending, job.Status.Running, job.Status.Succeeded, job.Status.Failed, job.Status.Unknown, job.Status.RetryCount)
 		} else {
 			_, err = fmt.Fprintf(writer, fmt.Sprintf(contentFormat, maxLenInfo[0]),
-				job.Name, job.CreationTimestamp.Format("2006-01-02 15:04:05"), job.Status.State.Phase, jobType, replicas,
+				job.Name, job.CreationTimestamp.Format("2006-01-02"), job.Status.State.Phase, jobType, replicas,
 				job.Status.MinAvailable, job.Status.Pending, job.Status.Running, job.Status.Succeeded, job.Status.Failed, job.Status.Unknown, job.Status.RetryCount)
 		}
 		if err != nil {

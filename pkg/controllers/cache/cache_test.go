@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
 	"volcano.sh/volcano/pkg/controllers/apis"
 )
 
@@ -243,8 +243,9 @@ func TestJobCache_Update(t *testing.T) {
 			JobsInCache: map[string]*v1alpha1.Job{
 				"job1": {
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job1",
-						Namespace: namespace,
+						Name:            "job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -255,8 +256,9 @@ func TestJobCache_Update(t *testing.T) {
 			},
 			UpdatedJob: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 				Status: v1alpha1.JobStatus{
 					State: v1alpha1.JobState{
@@ -271,8 +273,9 @@ func TestJobCache_Update(t *testing.T) {
 			JobsInCache: nil,
 			UpdatedJob: &v1alpha1.Job{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "job1",
-					Namespace: namespace,
+					Name:            "job1",
+					Namespace:       namespace,
+					ResourceVersion: "100",
 				},
 				Status: v1alpha1.JobStatus{
 					State: v1alpha1.JobState{
@@ -301,7 +304,7 @@ func TestJobCache_Update(t *testing.T) {
 		if testcase.ExpectedErr == nil {
 			job, err := jobCache.Get(fmt.Sprintf("%s/%s", testcase.UpdatedJob.Namespace, testcase.UpdatedJob.Name))
 			if err != nil {
-				t.Errorf("Expected Error not to have occured in case %d", i)
+				t.Errorf("Expected Error not to have occurred in case %d", i)
 			}
 			if job.Job.Status.State.Phase != testcase.UpdatedJob.Status.State.Phase {
 				t.Errorf("Error in updating Job, Expected: %s, but got: %s in case %d", testcase.UpdatedJob.Status.State.Phase, job.Job.Status.State.Phase, i)
@@ -382,7 +385,7 @@ func TestJobCache_Delete(t *testing.T) {
 		if testcase.ExpectedErr == nil {
 			job, err := jobCache.Get(fmt.Sprintf("%s/%s", testcase.DeleteJob.Namespace, testcase.DeleteJob.Name))
 			if err == nil {
-				t.Errorf("Expected Error to have occured in case %d", i)
+				t.Errorf("Expected Error to have occurred in case %d", i)
 			}
 			if job != nil {
 				t.Errorf("Expected Job to be nil but got value in case %d", i)
@@ -469,7 +472,7 @@ func TestJobCache_AddPod(t *testing.T) {
 		if err == nil {
 			job, err := jobCache.Get(fmt.Sprintf("%s/%s", testcase.JobsInCache["job1"].Namespace, testcase.JobsInCache["job1"].Name))
 			if err != nil {
-				t.Errorf("Expected Error not to occur while retriving job from cache in case %d", i)
+				t.Errorf("Expected Error not to occur while retrieving job from cache in case %d", i)
 			}
 			if err == nil {
 				if len(job.Pods) != 1 {
@@ -578,7 +581,7 @@ func TestJobCache_DeletePod(t *testing.T) {
 		if err == nil {
 			job, err := jobCache.Get(fmt.Sprintf("%s/%s", namespace, "job1"))
 			if err != nil {
-				t.Errorf("Expected Error not to have occured but got error: %s in case %d", err, i)
+				t.Errorf("Expected Error not to have occurred but got error: %s in case %d", err, i)
 			}
 			if len(job.Pods["task1"]) != 1 {
 				t.Errorf("Expected total pods to be 1, but got: %d in case %d", len(job.Pods["task1"]), i)
@@ -685,7 +688,7 @@ func TestJobCache_UpdatePod(t *testing.T) {
 		if err == nil {
 			job, err := jobCache.Get(fmt.Sprintf("%s/%s", namespace, "job1"))
 			if err != nil {
-				t.Errorf("Expected Error not to have occured but got error: %s in case %d", err, i)
+				t.Errorf("Expected Error not to have occurred but got error: %s in case %d", err, i)
 			}
 			for _, task := range job.Pods {
 				for _, pod := range task {

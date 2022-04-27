@@ -18,7 +18,6 @@ package job
 
 import (
 	"encoding/json"
-	"github.com/spf13/cobra"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +25,9 @@ import (
 	"testing"
 	"time"
 
-	v1alpha1 "volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	"github.com/spf13/cobra"
+
+	v1alpha1 "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 )
 
 func TestCreateJob(t *testing.T) {
@@ -76,6 +77,7 @@ func TestCreateJob(t *testing.T) {
 			commonFlags: commonFlags{
 				Master: server.URL,
 			},
+			Name:      "test",
 			Namespace: "test",
 			Requests:  "cpu=1000m,memory=100Mi",
 		}
@@ -103,9 +105,6 @@ func TestInitRunFlags(t *testing.T) {
 	}
 	if cmd.Flag("replicas") == nil {
 		t.Errorf("Could not find the flag replicas")
-	}
-	if cmd.Flag("name") == nil {
-		t.Errorf("Could not find the flag name")
 	}
 	if cmd.Flag("min") == nil {
 		t.Errorf("Could not find the flag min")

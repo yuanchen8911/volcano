@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Vulcan Authors.
+Copyright 2019 The Volcano Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,15 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/client/clientset/versioned"
+	"volcano.sh/apis/pkg/client/clientset/versioned"
+	"volcano.sh/volcano/pkg/cli/util"
 )
 
 type deleteFlags struct {
@@ -35,7 +37,7 @@ type deleteFlags struct {
 
 var deleteJobFlags = &deleteFlags{}
 
-// InitDeleteFlags  init the delete command flags
+// InitDeleteFlags init the delete command flags.
 func InitDeleteFlags(cmd *cobra.Command) {
 	initFlags(cmd, &deleteJobFlags.commonFlags)
 
@@ -43,9 +45,9 @@ func InitDeleteFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVarP(&deleteJobFlags.JobName, "name", "N", "", "the name of job")
 }
 
-// DeleteJob  delete the job
+// DeleteJob delete the job.
 func DeleteJob() error {
-	config, err := buildConfig(deleteJobFlags.Master, deleteJobFlags.Kubeconfig)
+	config, err := util.BuildConfig(deleteJobFlags.Master, deleteJobFlags.Kubeconfig)
 	if err != nil {
 		return err
 	}
@@ -56,11 +58,10 @@ func DeleteJob() error {
 	}
 
 	jobClient := versioned.NewForConfigOrDie(config)
-	err = jobClient.BatchV1alpha1().Jobs(deleteJobFlags.Namespace).Delete(deleteJobFlags.JobName, &metav1.DeleteOptions{})
+	err = jobClient.BatchV1alpha1().Jobs(deleteJobFlags.Namespace).Delete(context.TODO(), deleteJobFlags.JobName, metav1.DeleteOptions{})
 	if err != nil {
 		return err
 	}
 	fmt.Printf("delete job %v successfully\n", deleteJobFlags.JobName)
 	return nil
-
 }

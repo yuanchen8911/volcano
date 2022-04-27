@@ -1,3 +1,5 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
 approvers:
 - mikedanese
 - dims
@@ -11,32 +13,25 @@ reviewers:
 - vishh
 - mikedanese
 - liggitt
-- gmarek
 - davidopp
 - pmorie
 - sttts
 - quinton-hoole
 - dchen1107
 - saad-ali
-- zmerlynn
 - luxas
 - justinsb
-- roberthbailey
-- eparis
-- jlowdermilk
 - piosz
 - jsafrane
 - dims
 - krousey
 - rootfs
-- jszczepkowski
-- markturansky
-- girishkalele
-- jdef
 - freehan
 - jingxu97
 - wlan0
 - cheftako
 - andrewsykim
+- mcrute
 labels:
 - sig/cloud-provider
+- area/cloudprovider

@@ -21,7 +21,7 @@ import (
 	"io/ioutil"
 	"strings"
 
-	yaml "gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v2"
 
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/framework"
@@ -34,29 +34,42 @@ tiers:
 - plugins:
   - name: priority
   - name: gang
+  - name: conformance
 - plugins:
+  - name: overcommit
   - name: drf
   - name: predicates
   - name: proportion
   - name: nodeorder
 `
 
-func loadSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, error) {
+func unmarshalSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, []conf.Configuration, map[string]string, error) {
 	var actions []framework.Action
 
 	schedulerConf := &conf.SchedulerConfiguration{}
 
-	buf := make([]byte, len(confStr))
-	copy(buf, confStr)
-
-	if err := yaml.Unmarshal(buf, schedulerConf); err != nil {
-		return nil, nil, err
+	if err := yaml.Unmarshal([]byte(confStr), schedulerConf); err != nil {
+		return nil, nil, nil, nil, err
 	}
-
 	// Set default settings for each plugin if not set
 	for i, tier := range schedulerConf.Tiers {
+		// drf with hierarchy enabled
+		hdrf := false
+		// proportion enabled
+		proportion := false
 		for j := range tier.Plugins {
+			if tier.Plugins[j].Name == "drf" &&
+				tier.Plugins[j].EnabledHierarchy != nil &&
+				*tier.Plugins[j].EnabledHierarchy {
+				hdrf = true
+			}
+			if tier.Plugins[j].Name == "proportion" {
+				proportion = true
+			}
 			plugins.ApplyPluginConfDefaults(&schedulerConf.Tiers[i].Plugins[j])
+		}
+		if hdrf && proportion {
+			return nil, nil, nil, nil, fmt.Errorf("proportion and drf with hierarchy enabled conflicts")
 		}
 	}
 
@@ -65,11 +78,11 @@ func loadSchedulerConf(confStr string) ([]framework.Action, []conf.Tier, error) 
 		if action, found := framework.GetAction(strings.TrimSpace(actionName)); found {
 			actions = append(actions, action)
 		} else {
-			return nil, nil, fmt.Errorf("failed to found Action %s, ignore it", actionName)
+			return nil, nil, nil, nil, fmt.Errorf("failed to find Action %s, ignore it", actionName)
 		}
 	}
 
-	return actions, schedulerConf.Tiers, nil
+	return actions, schedulerConf.Tiers, schedulerConf.Configurations, schedulerConf.MetricsConfiguration, nil
 }
 
 func readSchedulerConf(confPath string) (string, error) {

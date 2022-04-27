@@ -17,76 +17,68 @@ limitations under the License.
 package enqueue
 
 import (
-	"github.com/golang/glog"
+	"time"
 
-	"volcano.sh/volcano/pkg/apis/scheduling"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog"
+
+	"volcano.sh/apis/pkg/apis/scheduling"
 	"volcano.sh/volcano/pkg/scheduler/api"
 	"volcano.sh/volcano/pkg/scheduler/framework"
 	"volcano.sh/volcano/pkg/scheduler/util"
 )
 
-type enqueueAction struct {
-	ssn *framework.Session
+type Action struct{}
+
+func New() *Action {
+	return &Action{}
 }
 
-func New() *enqueueAction {
-	return &enqueueAction{}
-}
-
-func (enqueue *enqueueAction) Name() string {
+func (enqueue *Action) Name() string {
 	return "enqueue"
 }
 
-func (enqueue *enqueueAction) Initialize() {}
+func (enqueue *Action) Initialize() {}
 
-func (enqueue *enqueueAction) Execute(ssn *framework.Session) {
-	glog.V(3).Infof("Enter Enqueue ...")
-	defer glog.V(3).Infof("Leaving Enqueue ...")
+func (enqueue *Action) Execute(ssn *framework.Session) {
+	klog.V(3).Infof("Enter Enqueue ...")
+	defer klog.V(3).Infof("Leaving Enqueue ...")
 
 	queues := util.NewPriorityQueue(ssn.QueueOrderFn)
 	queueMap := map[api.QueueID]*api.QueueInfo{}
-
 	jobsMap := map[api.QueueID]*util.PriorityQueue{}
 
 	for _, job := range ssn.Jobs {
-		if queue, found := ssn.Queues[job.Queue]; !found {
-			glog.Errorf("Failed to find Queue <%s> for Job <%s/%s>",
-				job.Queue, job.Namespace, job.Name)
-			continue
-		} else {
-			if _, existed := queueMap[queue.UID]; !existed {
-				glog.V(3).Infof("Added Queue <%s> for Job <%s/%s>",
-					queue.Name, job.Namespace, job.Name)
-
-				queueMap[queue.UID] = queue
-				queues.Push(queue)
+		if job.ScheduleStartTimestamp.IsZero() {
+			ssn.Jobs[job.UID].ScheduleStartTimestamp = metav1.Time{
+				Time: time.Now(),
 			}
 		}
+		if queue, found := ssn.Queues[job.Queue]; !found {
+			klog.Errorf("Failed to find Queue <%s> for Job <%s/%s>",
+				job.Queue, job.Namespace, job.Name)
+			continue
+		} else if _, existed := queueMap[queue.UID]; !existed {
+			klog.V(5).Infof("Added Queue <%s> for Job <%s/%s>",
+				queue.Name, job.Namespace, job.Name)
 
-		if job.PodGroup.Status.Phase == scheduling.PodGroupPending {
+			queueMap[queue.UID] = queue
+			queues.Push(queue)
+		}
+
+		if job.IsPending() {
 			if _, found := jobsMap[job.Queue]; !found {
 				jobsMap[job.Queue] = util.NewPriorityQueue(ssn.JobOrderFn)
 			}
-			glog.V(3).Infof("Added Job <%s/%s> into Queue <%s>", job.Namespace, job.Name, job.Queue)
+			klog.V(5).Infof("Added Job <%s/%s> into Queue <%s>", job.Namespace, job.Name, job.Queue)
 			jobsMap[job.Queue].Push(job)
 		}
 	}
 
-	glog.V(3).Infof("Try to enqueue PodGroup to %d Queues", len(jobsMap))
-
-	emptyRes := api.EmptyResource()
-	nodesIdleRes := api.EmptyResource()
-	for _, node := range ssn.Nodes {
-		nodesIdleRes.Add(node.Allocatable.Clone().Multi(1.2).Sub(node.Used))
-	}
+	klog.V(3).Infof("Try to enqueue PodGroup to %d Queues", len(jobsMap))
 
 	for {
 		if queues.Empty() {
-			break
-		}
-
-		if nodesIdleRes.Less(emptyRes) {
-			glog.V(3).Infof("Node idle resource is overused, ignore it.")
 			break
 		}
 
@@ -99,19 +91,8 @@ func (enqueue *enqueueAction) Execute(ssn *framework.Session) {
 		}
 		job := jobs.Pop().(*api.JobInfo)
 
-		inqueue := false
-
-		if job.PodGroup.Spec.MinResources == nil {
-			inqueue = true
-		} else {
-			pgResource := api.NewResource(*job.PodGroup.Spec.MinResources)
-			if ssn.JobEnqueueable(job) && pgResource.LessEqual(nodesIdleRes) {
-				nodesIdleRes.Sub(pgResource)
-				inqueue = true
-			}
-		}
-
-		if inqueue {
+		if job.PodGroup.Spec.MinResources == nil || ssn.JobEnqueueable(job) {
+			ssn.JobEnqueued(job)
 			job.PodGroup.Status.Phase = scheduling.PodGroupInqueue
 			ssn.Jobs[job.UID] = job
 		}
@@ -121,4 +102,4 @@ func (enqueue *enqueueAction) Execute(ssn *framework.Session) {
 	}
 }
 
-func (enqueue *enqueueAction) UnInitialize() {}
+func (enqueue *Action) UnInitialize() {}

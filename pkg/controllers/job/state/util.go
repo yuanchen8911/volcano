@@ -17,18 +17,30 @@ limitations under the License.
 package state
 
 import (
-	vkv1 "volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	vcbatch "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 )
 
-//DefaultMaxRetry is the default number of retries.
-const DefaultMaxRetry int32 = 3
-
-//TotalTasks returns number of tasks in a given volcano job
-func TotalTasks(job *vkv1.Job) int32 {
+// TotalTasks returns number of tasks in a given volcano job.
+func TotalTasks(job *vcbatch.Job) int32 {
 	var rep int32
 
 	for _, task := range job.Spec.Tasks {
 		rep += task.Replicas
+	}
+
+	return rep
+}
+
+// TotalTaskMinAvailable returns the sum of task minAvailable
+func TotalTaskMinAvailable(job *vcbatch.Job) int32 {
+	var rep int32
+
+	for _, task := range job.Spec.Tasks {
+		if task.MinAvailable != nil {
+			rep += *task.MinAvailable
+		} else {
+			rep += task.Replicas
+		}
 	}
 
 	return rep

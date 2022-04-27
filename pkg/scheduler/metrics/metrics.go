@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Kubernetes Authors.
+Copyright 2020 The Volcano Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -44,6 +44,24 @@ var (
 		},
 	)
 
+	e2eJobSchedulingLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Subsystem: VolcanoNamespace,
+			Name:      "e2e_job_scheduling_latency_milliseconds",
+			Help:      "E2e job scheduling latency in milliseconds",
+			Buckets:   prometheus.ExponentialBuckets(32, 2, 10),
+		},
+	)
+
+	e2eJobSchedulingDuration = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Subsystem: VolcanoNamespace,
+			Name:      "e2e_job_scheduling_duration",
+			Help:      "E2E job scheduling duration",
+		},
+		[]string{"job_name", "queue", "job_namespace"},
+	)
+
 	pluginSchedulingLatency = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Subsystem: VolcanoNamespace,
@@ -65,8 +83,8 @@ var (
 	taskSchedulingLatency = promauto.NewHistogram(
 		prometheus.HistogramOpts{
 			Subsystem: VolcanoNamespace,
-			Name:      "task_scheduling_latency_microseconds",
-			Help:      "Task scheduling latency in microseconds",
+			Name:      "task_scheduling_latency_milliseconds",
+			Help:      "Task scheduling latency in milliseconds",
 			Buckets:   prometheus.ExponentialBuckets(5, 2, 10),
 		},
 	)
@@ -110,19 +128,11 @@ var (
 			Help:      "Number of jobs could not be scheduled",
 		},
 	)
-
-	jobRetryCount = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Subsystem: VolcanoNamespace,
-			Name:      "job_retry_counts",
-			Help:      "Number of retry counts for one job",
-		}, []string{"job_id"},
-	)
 )
 
 // UpdatePluginDuration updates latency for every plugin
-func UpdatePluginDuration(pluginName, OnSessionStatus string, duration time.Duration) {
-	pluginSchedulingLatency.WithLabelValues(pluginName, OnSessionStatus).Observe(DurationInMicroseconds(duration))
+func UpdatePluginDuration(pluginName, onSessionStatus string, duration time.Duration) {
+	pluginSchedulingLatency.WithLabelValues(pluginName, onSessionStatus).Observe(DurationInMicroseconds(duration))
 }
 
 // UpdateActionDuration updates latency for every action
@@ -135,9 +145,15 @@ func UpdateE2eDuration(duration time.Duration) {
 	e2eSchedulingLatency.Observe(DurationInMilliseconds(duration))
 }
 
+// UpdateE2eSchedulingDurationByJob updates entire end to end scheduling duration
+func UpdateE2eSchedulingDurationByJob(jobName string, queue string, namespace string, duration time.Duration) {
+	e2eJobSchedulingDuration.WithLabelValues(jobName, queue, namespace).Set(DurationInMilliseconds(duration))
+	e2eJobSchedulingLatency.Observe(DurationInMilliseconds(duration))
+}
+
 // UpdateTaskScheduleDuration updates single task scheduling latency
 func UpdateTaskScheduleDuration(duration time.Duration) {
-	taskSchedulingLatency.Observe(DurationInMicroseconds(duration))
+	taskSchedulingLatency.Observe(DurationInMilliseconds(duration))
 }
 
 // UpdatePodScheduleStatus update pod schedule decision, could be Success, Failure, Error
@@ -163,11 +179,6 @@ func UpdateUnscheduleTaskCount(jobID string, taskCount int) {
 // UpdateUnscheduleJobCount records total number of unscheduleable jobs
 func UpdateUnscheduleJobCount(jobCount int) {
 	unscheduleJobCount.Set(float64(jobCount))
-}
-
-// RegisterJobRetries total number of job retries.
-func RegisterJobRetries(jobID string) {
-	jobRetryCount.WithLabelValues(jobID).Inc()
 }
 
 // DurationInMicroseconds gets the time in microseconds.

@@ -18,15 +18,22 @@ package plugins
 
 import (
 	"volcano.sh/volcano/pkg/scheduler/framework"
-
 	"volcano.sh/volcano/pkg/scheduler/plugins/binpack"
 	"volcano.sh/volcano/pkg/scheduler/plugins/conformance"
 	"volcano.sh/volcano/pkg/scheduler/plugins/drf"
+	"volcano.sh/volcano/pkg/scheduler/plugins/extender"
 	"volcano.sh/volcano/pkg/scheduler/plugins/gang"
 	"volcano.sh/volcano/pkg/scheduler/plugins/nodeorder"
+	"volcano.sh/volcano/pkg/scheduler/plugins/numaaware"
+	"volcano.sh/volcano/pkg/scheduler/plugins/overcommit"
 	"volcano.sh/volcano/pkg/scheduler/plugins/predicates"
 	"volcano.sh/volcano/pkg/scheduler/plugins/priority"
 	"volcano.sh/volcano/pkg/scheduler/plugins/proportion"
+	"volcano.sh/volcano/pkg/scheduler/plugins/reservation"
+	"volcano.sh/volcano/pkg/scheduler/plugins/sla"
+	tasktopology "volcano.sh/volcano/pkg/scheduler/plugins/task-topology"
+	"volcano.sh/volcano/pkg/scheduler/plugins/tdm"
+	"volcano.sh/volcano/pkg/scheduler/plugins/usage"
 )
 
 func init() {
@@ -38,7 +45,17 @@ func init() {
 	framework.RegisterPluginBuilder(nodeorder.PluginName, nodeorder.New)
 	framework.RegisterPluginBuilder(conformance.PluginName, conformance.New)
 	framework.RegisterPluginBuilder(binpack.PluginName, binpack.New)
+	framework.RegisterPluginBuilder(reservation.PluginName, reservation.New)
+	framework.RegisterPluginBuilder(tdm.PluginName, tdm.New)
+	framework.RegisterPluginBuilder(overcommit.PluginName, overcommit.New)
+	framework.RegisterPluginBuilder(sla.PluginName, sla.New)
+	framework.RegisterPluginBuilder(tasktopology.PluginName, tasktopology.New)
+	framework.RegisterPluginBuilder(numaaware.PluginName, numaaware.New)
+	framework.RegisterPluginBuilder(usage.PluginName, usage.New)
 
 	// Plugins for Queues
 	framework.RegisterPluginBuilder(proportion.PluginName, proportion.New)
+
+	// Plugins for Extender
+	framework.RegisterPluginBuilder(extender.PluginName, extender.New)
 }

@@ -17,13 +17,18 @@ limitations under the License.
 package job
 
 import (
+	"context"
 	"fmt"
-	"k8s.io/api/core/v1"
+	"reflect"
 	"testing"
 
+	"github.com/agiledragon/gomonkey/v2"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"volcano.sh/volcano/pkg/apis/batch/v1alpha1"
+	"volcano.sh/apis/pkg/apis/batch/v1alpha1"
+	busv1alpha1 "volcano.sh/apis/pkg/apis/bus/v1alpha1"
+	schedulingv1alpha2 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 	"volcano.sh/volcano/pkg/controllers/apis"
 	"volcano.sh/volcano/pkg/controllers/job/state"
 )
@@ -34,7 +39,7 @@ func TestAbortedState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -44,8 +49,9 @@ func TestAbortedState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -54,7 +60,7 @@ func TestAbortedState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.ResumeJobAction,
+			Action:      busv1alpha1.ResumeJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -64,8 +70,9 @@ func TestAbortedState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -74,7 +81,7 @@ func TestAbortedState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -86,7 +93,7 @@ func TestAbortedState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -100,7 +107,7 @@ func TestAbortedState_Execute(t *testing.T) {
 			if err != nil {
 				t.Errorf("Expected Error not to occur but got: %s", err)
 			}
-			if testcase.Action == v1alpha1.ResumeJobAction {
+			if testcase.Action == busv1alpha1.ResumeJobAction {
 				jobInfo, err := fakecontroller.cache.Get(fmt.Sprintf("%s/%s", testcase.JobInfo.Job.Namespace, testcase.JobInfo.Job.Name))
 				if err != nil {
 					t.Error("Error while retrieving value from Cache")
@@ -120,7 +127,7 @@ func TestAbortingState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -130,8 +137,9 @@ func TestAbortingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -140,7 +148,7 @@ func TestAbortingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.ResumeJobAction,
+			Action:      busv1alpha1.ResumeJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -150,8 +158,9 @@ func TestAbortingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -160,7 +169,7 @@ func TestAbortingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -170,8 +179,9 @@ func TestAbortingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Pending: 1,
@@ -186,7 +196,7 @@ func TestAbortingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -198,7 +208,7 @@ func TestAbortingState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -212,7 +222,7 @@ func TestAbortingState_Execute(t *testing.T) {
 			if err != nil {
 				t.Errorf("Expected Error not to occur but got: %s", err)
 			}
-			if testcase.Action == v1alpha1.ResumeJobAction {
+			if testcase.Action == busv1alpha1.ResumeJobAction {
 				jobInfo, err := fakecontroller.cache.Get(fmt.Sprintf("%s/%s", testcase.JobInfo.Job.Namespace, testcase.JobInfo.Job.Name))
 				if err != nil {
 					t.Error("Error while retrieving value from Cache")
@@ -223,7 +233,7 @@ func TestAbortingState_Execute(t *testing.T) {
 				}
 			}
 
-			if testcase.Action != v1alpha1.ResumeJobAction {
+			if testcase.Action != busv1alpha1.ResumeJobAction {
 				jobInfo, err := fakecontroller.cache.Get(fmt.Sprintf("%s/%s", testcase.JobInfo.Job.Namespace, testcase.JobInfo.Job.Name))
 				if err != nil {
 					t.Error("Error while retrieving value from Cache")
@@ -250,7 +260,7 @@ func TestCompletingState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -260,8 +270,9 @@ func TestCompletingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Running: 2,
@@ -277,7 +288,7 @@ func TestCompletingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.ResumeJobAction,
+			Action:      busv1alpha1.ResumeJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -287,8 +298,9 @@ func TestCompletingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -297,7 +309,7 @@ func TestCompletingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.ResumeJobAction,
+			Action:      busv1alpha1.ResumeJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -309,7 +321,7 @@ func TestCompletingState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -349,7 +361,7 @@ func TestFinishedState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -359,8 +371,9 @@ func TestFinishedState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -369,7 +382,7 @@ func TestFinishedState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.ResumeJobAction,
+			Action:      busv1alpha1.ResumeJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -381,7 +394,7 @@ func TestFinishedState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -405,7 +418,7 @@ func TestPendingState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -415,8 +428,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -425,7 +439,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -435,8 +449,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Terminating: 2,
@@ -452,7 +467,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -462,8 +477,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -472,7 +488,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.AbortJobAction,
+			Action:      busv1alpha1.AbortJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -482,8 +498,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Terminating: 2,
@@ -499,7 +516,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.AbortJobAction,
+			Action:      busv1alpha1.AbortJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -509,8 +526,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Terminating: 2,
@@ -526,7 +544,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.TerminateJobAction,
+			Action:      busv1alpha1.TerminateJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -536,8 +554,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -546,7 +565,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.CompleteJobAction,
+			Action:      busv1alpha1.CompleteJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -556,8 +575,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Terminating: 2,
@@ -573,7 +593,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.CompleteJobAction,
+			Action:      busv1alpha1.CompleteJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -583,8 +603,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						MinAvailable: 3,
@@ -604,7 +625,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.EnqueueAction,
+			Action:      busv1alpha1.EnqueueAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -614,8 +635,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						MinAvailable: 3,
@@ -634,7 +656,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.EnqueueAction,
+			Action:      busv1alpha1.EnqueueAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -644,8 +666,9 @@ func TestPendingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						MinAvailable: 3,
@@ -664,7 +687,7 @@ func TestPendingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.SyncJobAction,
+			Action:      busv1alpha1.SyncJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -676,7 +699,13 @@ func TestPendingState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			patches := gomonkey.ApplyMethod(reflect.TypeOf(fakecontroller), "GetQueueInfo", func(_ *jobcontroller, _ string) (*schedulingv1alpha2.Queue, error) {
+				return &schedulingv1alpha2.Queue{}, nil
+			})
+
+			defer patches.Reset()
+
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -696,27 +725,27 @@ func TestPendingState_Execute(t *testing.T) {
 				t.Error("Error while retrieving value from Cache")
 			}
 
-			if testcase.Action == v1alpha1.RestartJobAction {
+			if testcase.Action == busv1alpha1.RestartJobAction {
 				// always jump to restarting firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Restarting {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Restarting, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.AbortJobAction {
+			} else if testcase.Action == busv1alpha1.AbortJobAction {
 				// always jump to aborting firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Aborting {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Aborting, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.TerminateJobAction {
+			} else if testcase.Action == busv1alpha1.TerminateJobAction {
 				// always jump to completing firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Terminating {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Terminating, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.CompleteJobAction {
+			} else if testcase.Action == busv1alpha1.CompleteJobAction {
 				// always jump to completing firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Completing {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Completing, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.EnqueueAction {
+			} else if testcase.Action == busv1alpha1.EnqueueAction {
 				if jobInfo.Job.Spec.MinAvailable <= jobInfo.Job.Status.Running+jobInfo.Job.Status.Succeeded+jobInfo.Job.Status.Failed {
 					if jobInfo.Job.Status.State.Phase != v1alpha1.Running {
 						t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Running, jobInfo.Job.Status.State.Phase, i)
@@ -737,7 +766,7 @@ func TestRestartingState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -747,8 +776,9 @@ func TestRestartingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						MaxRetry: 3,
@@ -761,7 +791,7 @@ func TestRestartingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -771,17 +801,20 @@ func TestRestartingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						MaxRetry: 3,
 						Tasks: []v1alpha1.TaskSpec{
 							{
-								Name: "task1",
+								Name:     "task1",
+								Replicas: 1,
 							},
 							{
-								Name: "task2",
+								Name:     "task2",
+								Replicas: 1,
 							},
 						},
 					},
@@ -795,7 +828,7 @@ func TestRestartingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -807,7 +840,7 @@ func TestRestartingState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -846,7 +879,7 @@ func TestRunningState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -856,8 +889,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -874,7 +908,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -884,8 +918,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -896,7 +931,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.RestartJobAction,
+			Action:      busv1alpha1.RestartJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -906,8 +941,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -918,7 +954,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.AbortJobAction,
+			Action:      busv1alpha1.AbortJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -928,8 +964,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -946,7 +983,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.AbortJobAction,
+			Action:      busv1alpha1.AbortJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -956,8 +993,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -968,7 +1006,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.TerminateJobAction,
+			Action:      busv1alpha1.TerminateJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -978,8 +1016,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -996,7 +1035,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.TerminateJobAction,
+			Action:      busv1alpha1.TerminateJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -1006,8 +1045,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -1018,7 +1058,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.CompleteJobAction,
+			Action:      busv1alpha1.CompleteJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -1028,8 +1068,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{},
 					Status: v1alpha1.JobStatus{
@@ -1046,7 +1087,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.CompleteJobAction,
+			Action:      busv1alpha1.CompleteJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -1056,8 +1097,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job1",
-						Namespace: namespace,
+						Name:            "job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						Tasks: []v1alpha1.TaskSpec{
@@ -1086,7 +1128,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.SyncJobAction,
+			Action:      busv1alpha1.SyncJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -1096,8 +1138,9 @@ func TestRunningState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "job1",
-						Namespace: namespace,
+						Name:            "job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Spec: v1alpha1.JobSpec{
 						Tasks: []v1alpha1.TaskSpec{
@@ -1125,7 +1168,7 @@ func TestRunningState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.SyncJobAction,
+			Action:      busv1alpha1.SyncJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -1137,7 +1180,13 @@ func TestRunningState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			patches := gomonkey.ApplyMethod(reflect.TypeOf(fakecontroller), "GetQueueInfo", func(_ *jobcontroller, _ string) (*schedulingv1alpha2.Queue, error) {
+				return &schedulingv1alpha2.Queue{}, nil
+			})
+
+			defer patches.Reset()
+
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}
@@ -1157,22 +1206,22 @@ func TestRunningState_Execute(t *testing.T) {
 				t.Error("Error while retrieving value from Cache")
 			}
 
-			if testcase.Action == v1alpha1.RestartJobAction {
+			if testcase.Action == busv1alpha1.RestartJobAction {
 				// always jump to restarting firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Restarting {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Restarting, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.AbortJobAction {
+			} else if testcase.Action == busv1alpha1.AbortJobAction {
 				// always jump to aborting firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Aborting {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Restarting, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.TerminateJobAction {
+			} else if testcase.Action == busv1alpha1.TerminateJobAction {
 				// always jump to terminating firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Terminating {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Terminating, jobInfo.Job.Status.State.Phase, i)
 				}
-			} else if testcase.Action == v1alpha1.CompleteJobAction {
+			} else if testcase.Action == busv1alpha1.CompleteJobAction {
 				// always jump to completing firstly
 				if jobInfo.Job.Status.State.Phase != v1alpha1.Completing {
 					t.Errorf("Expected Job phase to %s, but got %s in case %d", v1alpha1.Restarting, jobInfo.Job.Status.State.Phase, i)
@@ -1199,7 +1248,7 @@ func TestTerminatingState_Execute(t *testing.T) {
 	testcases := []struct {
 		Name        string
 		JobInfo     *apis.JobInfo
-		Action      v1alpha1.Action
+		Action      busv1alpha1.Action
 		ExpectedVal error
 	}{
 		{
@@ -1209,8 +1258,9 @@ func TestTerminatingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						Running: 2,
@@ -1226,7 +1276,7 @@ func TestTerminatingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.TerminateJobAction,
+			Action:      busv1alpha1.TerminateJobAction,
 			ExpectedVal: nil,
 		},
 		{
@@ -1236,8 +1286,9 @@ func TestTerminatingState_Execute(t *testing.T) {
 				Name:      "jobinfo1",
 				Job: &v1alpha1.Job{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      "Job1",
-						Namespace: namespace,
+						Name:            "Job1",
+						Namespace:       namespace,
+						ResourceVersion: "100",
 					},
 					Status: v1alpha1.JobStatus{
 						State: v1alpha1.JobState{
@@ -1246,7 +1297,7 @@ func TestTerminatingState_Execute(t *testing.T) {
 					},
 				},
 			},
-			Action:      v1alpha1.TerminateJobAction,
+			Action:      busv1alpha1.TerminateJobAction,
 			ExpectedVal: nil,
 		},
 	}
@@ -1258,7 +1309,7 @@ func TestTerminatingState_Execute(t *testing.T) {
 			fakecontroller := newFakeController()
 			state.KillJob = fakecontroller.killJob
 
-			_, err := fakecontroller.vkClients.BatchV1alpha1().Jobs(namespace).Create(testcase.JobInfo.Job)
+			_, err := fakecontroller.vcClient.BatchV1alpha1().Jobs(namespace).Create(context.TODO(), testcase.JobInfo.Job, metav1.CreateOptions{})
 			if err != nil {
 				t.Error("Error while creating Job")
 			}

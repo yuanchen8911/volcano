@@ -17,14 +17,16 @@ limitations under the License.
 package podgroup
 
 import (
-	"github.com/golang/glog"
+	"context"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/klog"
 
-	"volcano.sh/volcano/pkg/apis/helpers"
-	scheduling "volcano.sh/volcano/pkg/apis/scheduling/v1alpha2"
+	"volcano.sh/apis/pkg/apis/helpers"
+	scheduling "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
 type podRequest struct {
@@ -32,10 +34,10 @@ type podRequest struct {
 	podNamespace string
 }
 
-func (cc *Controller) addPod(obj interface{}) {
+func (pg *pgcontroller) addPod(obj interface{}) {
 	pod, ok := obj.(*v1.Pod)
 	if !ok {
-		glog.Errorf("Failed to convert %v to v1.Pod", obj)
+		klog.Errorf("Failed to convert %v to v1.Pod", obj)
 		return
 	}
 
@@ -44,78 +46,140 @@ func (cc *Controller) addPod(obj interface{}) {
 		podNamespace: pod.Namespace,
 	}
 
-	cc.queue.Add(req)
+	pg.queue.Add(req)
 }
 
-func (cc *Controller) updatePodAnnotations(pod *v1.Pod, pgName string) error {
+func (pg *pgcontroller) updatePodAnnotations(pod *v1.Pod, pgName string) error {
 	if pod.Annotations == nil {
 		pod.Annotations = make(map[string]string)
 	}
-	if pod.Annotations[scheduling.GroupNameAnnotationKey] == "" {
-		pod.Annotations[scheduling.GroupNameAnnotationKey] = pgName
+	if pod.Annotations[scheduling.KubeGroupNameAnnotationKey] == "" {
+		pod.Annotations[scheduling.KubeGroupNameAnnotationKey] = pgName
 	} else {
-		if pod.Annotations[scheduling.GroupNameAnnotationKey] != pgName {
-			glog.Errorf("normal pod %s/%s annotations %s value is not %s, but %s", pod.Namespace, pod.Name,
-				scheduling.GroupNameAnnotationKey, pgName, pod.Annotations[scheduling.GroupNameAnnotationKey])
+		if pod.Annotations[scheduling.KubeGroupNameAnnotationKey] != pgName {
+			klog.Errorf("normal pod %s/%s annotations %s value is not %s, but %s", pod.Namespace, pod.Name,
+				scheduling.KubeGroupNameAnnotationKey, pgName, pod.Annotations[scheduling.KubeGroupNameAnnotationKey])
 		}
 		return nil
 	}
 
-	if _, err := cc.kubeClients.CoreV1().Pods(pod.Namespace).Update(pod); err != nil {
-		glog.Errorf("Failed to update pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
+	if _, err := pg.kubeClient.CoreV1().Pods(pod.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{}); err != nil {
+		klog.Errorf("Failed to update pod <%s/%s>: %v", pod.Namespace, pod.Name, err)
 		return err
 	}
 
 	return nil
 }
 
-func (cc *Controller) createNormalPodPGIfNotExist(pod *v1.Pod) error {
+func (pg *pgcontroller) createNormalPodPGIfNotExist(pod *v1.Pod) error {
 	pgName := helpers.GeneratePodgroupName(pod)
 
-	if _, err := cc.pgLister.PodGroups(pod.Namespace).Get(pgName); err != nil {
+	if _, err := pg.pgLister.PodGroups(pod.Namespace).Get(pgName); err != nil {
 		if !apierrors.IsNotFound(err) {
-			glog.Errorf("Failed to get normal PodGroup for Pod <%s/%s>: %v",
+			klog.Errorf("Failed to get normal PodGroup for Pod <%s/%s>: %v",
 				pod.Namespace, pod.Name, err)
 			return err
 		}
 
-		pg := &scheduling.PodGroup{
+		obj := &scheduling.PodGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace:       pod.Namespace,
 				Name:            pgName,
 				OwnerReferences: newPGOwnerReferences(pod),
+				Annotations:     map[string]string{},
+				Labels:          map[string]string{},
 			},
 			Spec: scheduling.PodGroupSpec{
 				MinMember:         1,
 				PriorityClassName: pod.Spec.PriorityClassName,
+				MinResources:      calcPGMinResources(pod),
+			},
+			Status: scheduling.PodGroupStatus{
+				Phase: scheduling.PodGroupPending,
 			},
 		}
+		if queueName, ok := pod.Annotations[scheduling.QueueNameAnnotationKey]; ok {
+			obj.Spec.Queue = queueName
+		}
 
-		if _, err := cc.kbClients.SchedulingV1alpha2().PodGroups(pod.Namespace).Create(pg); err != nil {
-			glog.Errorf("Failed to create normal PodGroup for Pod <%s/%s>: %v",
+		if value, ok := pod.Annotations[scheduling.PodPreemptable]; ok {
+			obj.Annotations[scheduling.PodPreemptable] = value
+		}
+		if value, ok := pod.Annotations[scheduling.RevocableZone]; ok {
+			obj.Annotations[scheduling.RevocableZone] = value
+		}
+		if value, ok := pod.Labels[scheduling.PodPreemptable]; ok {
+			obj.Labels[scheduling.PodPreemptable] = value
+		}
+
+		if value, found := pod.Annotations[scheduling.JDBMinAvailable]; found {
+			obj.Annotations[scheduling.JDBMinAvailable] = value
+		} else if value, found := pod.Annotations[scheduling.JDBMaxUnavailable]; found {
+			obj.Annotations[scheduling.JDBMaxUnavailable] = value
+		}
+
+		if _, err := pg.vcClient.SchedulingV1beta1().PodGroups(pod.Namespace).Create(context.TODO(), obj, metav1.CreateOptions{}); err != nil {
+			klog.Errorf("Failed to create normal PodGroup for Pod <%s/%s>: %v",
 				pod.Namespace, pod.Name, err)
 			return err
 		}
 	}
 
-	return cc.updatePodAnnotations(pod, pgName)
+	return pg.updatePodAnnotations(pod, pgName)
 }
 
 func newPGOwnerReferences(pod *v1.Pod) []metav1.OwnerReference {
 	if len(pod.OwnerReferences) != 0 {
 		for _, ownerReference := range pod.OwnerReferences {
-			if ownerReference.Controller != nil && *ownerReference.Controller == true {
+			if ownerReference.Controller != nil && *ownerReference.Controller {
 				return pod.OwnerReferences
 			}
 		}
 	}
 
-	isController := true
-	return []metav1.OwnerReference{{
-		APIVersion: v1.SchemeGroupVersion.Version,
-		Kind:       "Pod",
-		Controller: &isController,
-		Name:       pod.Name,
-		UID:        pod.UID,
-	}}
+	gvk := schema.GroupVersionKind{
+		Group:   v1.SchemeGroupVersion.Group,
+		Version: v1.SchemeGroupVersion.Version,
+		Kind:    "Pod",
+	}
+	ref := metav1.NewControllerRef(pod, gvk)
+	return []metav1.OwnerReference{*ref}
+}
+
+// addResourceList add list resource quantity
+func addResourceList(list, req, limit v1.ResourceList) {
+	for name, quantity := range req {
+		if value, ok := list[name]; !ok {
+			list[name] = quantity.DeepCopy()
+		} else {
+			value.Add(quantity)
+			list[name] = value
+		}
+	}
+
+	if req != nil {
+		return
+	}
+
+	// If Requests is omitted for a container,
+	// it defaults to Limits if that is explicitly specified.
+	for name, quantity := range limit {
+		if value, ok := list[name]; !ok {
+			list[name] = quantity.DeepCopy()
+		} else {
+			value.Add(quantity)
+			list[name] = value
+		}
+	}
+}
+
+// calcPGMinResources calculate podgroup minimum resource
+func calcPGMinResources(pod *v1.Pod) *v1.ResourceList {
+	pgMinRes := v1.ResourceList{}
+
+	for _, c := range pod.Spec.Containers {
+		addResourceList(pgMinRes, c.Resources.Requests, c.Resources.Limits)
+	}
+
+	return &pgMinRes
 }
